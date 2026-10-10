@@ -39,5 +39,41 @@ services:
     ports:
       - "${AUTH_PORT:-3001}:3001"
 
+  mongo-restaurants:
+    image: mongo:7
+    container_name: mongo-restaurants
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${RESTAURANTS_MONGO_USER:-restaurants}
+      MONGO_INITDB_ROOT_PASSWORD: ${RESTAURANTS_MONGO_PASSWORD:-restaurants_password}
+    ports:
+      # Puerto 27018 en tu máquina para no chocar con un MongoDB local
+      - "${RESTAURANTS_MONGO_PORT:-27018}:27017"
+    volumes:
+      - mongo-restaurants-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  restaurants-service:
+    build:
+      context: ./services/restaurants-service
+    container_name: restaurants-service
+    restart: unless-stopped
+    depends_on:
+      mongo-restaurants:
+        condition: service_healthy
+    environment:
+      PORT: 3002
+      # Si cambiás la contraseña por una con caracteres especiales, codificala (URL-encode)
+      MONGO_URI: mongodb://${RESTAURANTS_MONGO_USER:-restaurants}:${RESTAURANTS_MONGO_PASSWORD:-restaurants_password}@mongo-restaurants:27017/${RESTAURANTS_MONGO_DB:-restaurants_db}?authSource=admin
+      # Mismo secreto que auth-service: así valida los JWT que ese servicio emite
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+    ports:
+      - "${RESTAURANTS_PORT:-3002}:3002"
+
 volumes:
   postgres-auth-data:
+  mongo-restaurants-data:
