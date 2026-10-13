@@ -74,6 +74,72 @@ services:
     ports:
       - "${RESTAURANTS_PORT:-3002}:3002"
 
+  postgres-reservations:
+    image: postgres:16-alpine
+    container_name: postgres-reservations
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${RESERVATIONS_DB_USER:-reservations}
+      POSTGRES_PASSWORD: ${RESERVATIONS_DB_PASSWORD:-reservations_password}
+      POSTGRES_DB: ${RESERVATIONS_DB_NAME:-reservations_db}
+    ports:
+      # Puerto 5434 en tu máquina (5433 ya lo usa la base de auth)
+      - "${RESERVATIONS_DB_PORT:-5434}:5432"
+    volumes:
+      - postgres-reservations-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${RESERVATIONS_DB_USER:-reservations} -d ${RESERVATIONS_DB_NAME:-reservations_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  reservations-service:
+    build:
+      context: ./services/reservations-service
+    container_name: reservations-service
+    restart: unless-stopped
+    depends_on:
+      postgres-reservations:
+        condition: service_healthy
+      restaurants-service:
+        condition: service_started
+    environment:
+      PORT: 3003
+      DB_HOST: postgres-reservations
+      DB_PORT: 5432
+      DB_USER: ${RESERVATIONS_DB_USER:-reservations}
+      DB_PASSWORD: ${RESERVATIONS_DB_PASSWORD:-reservations_password}
+      DB_NAME: ${RESERVATIONS_DB_NAME:-reservations_db}
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      # Dentro de la red de Docker los servicios se encuentran por nombre
+      RESTAURANTS_SERVICE_URL: http://restaurants-service:3002
+      RESTAURANT_TIME_ZONE: ${RESTAURANT_TIME_ZONE:-America/Argentina/Buenos_Aires}
+      RESERVATION_DURATION_MINUTES: ${RESERVATION_DURATION_MINUTES:-90}
+    ports:
+      - "${RESERVATIONS_PORT:-3003}:3003"
+
+  web-bff:
+    build:
+      context: ./services/web-bff
+    container_name: web-bff
+    restart: unless-stopped
+    depends_on:
+      - auth-service
+      - restaurants-service
+      - reservations-service
+    environment:
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      # Dentro de la red de Docker los servicios se encuentran por nombre
+      AUTH_SERVICE_URL: http://auth-service:3001
+      RESTAURANTS_SERVICE_URL: http://restaurants-service:3002
+      RESERVATIONS_SERVICE_URL: http://reservations-service:3003
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-3000}
+    ports:
+      - "${BFF_PORT:-3000}:3000"
+
 volumes:
   postgres-auth-data:
   mongo-restaurants-data:
+  postgres-reservations-data:
