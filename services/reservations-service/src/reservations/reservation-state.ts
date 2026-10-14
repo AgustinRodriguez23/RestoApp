@@ -6,12 +6,18 @@ import { ReservationStatus } from './entities/reservation-status.enum';
  * Todo lo que no figura acá está prohibido (los estados finales no tienen salida).
  */
 const TRANSITIONS: Record<ReservationStatus, readonly ReservationStatus[]> = {
+  [ReservationStatus.PENDING_PAYMENT]: [
+    ReservationStatus.CONFIRMED,
+    ReservationStatus.CANCELLED,
+    ReservationStatus.EXPIRED,
+  ],
   [ReservationStatus.CONFIRMED]: [
     ReservationStatus.CANCELLED,
     ReservationStatus.COMPLETED,
     ReservationStatus.NO_SHOW,
   ],
   [ReservationStatus.CANCELLED]: [],
+  [ReservationStatus.EXPIRED]: [],
   [ReservationStatus.COMPLETED]: [],
   [ReservationStatus.NO_SHOW]: [],
 };

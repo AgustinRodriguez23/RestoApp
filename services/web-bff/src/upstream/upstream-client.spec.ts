@@ -51,6 +51,23 @@ describe('UpstreamClient (contra un servidor HTTP real)', () => {
     expect(fake.calls[0].path).toBe('/x?search=pan+%26+vino&page=2');
   });
 
+  it('reenvía headers extra (Idempotency-Key) y callWithStatus devuelve el status exacto', async () => {
+    fake.reset(() => ({ status: 202, body: { id: 'p1' } }));
+
+    const res = await client.callWithStatus('auth', { method: 'POST', path: '/pay', body: {}, headers: { 'Idempotency-Key': 'k-12345678' } });
+
+    expect(res).toMatchObject({ status: 202, body: { id: 'p1' } });
+    expect(fake.calls[0].headers['idempotency-key']).toBe('k-12345678');
+  });
+
+  it('los servicios de pagos se encuentran por PAYMENTS_SERVICE_URL', async () => {
+    client = makeClient({ PAYMENTS_SERVICE_URL: fake.url });
+
+    await client.call('payments', { path: '/payments/x' });
+
+    expect(fake.calls[0].path).toBe('/payments/x');
+  });
+
   it('envía el body de un POST como JSON', async () => {
     await client.call('auth', { method: 'POST', path: '/auth/login', body: { email: 'a@b.com' } });
 

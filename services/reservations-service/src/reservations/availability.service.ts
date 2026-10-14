@@ -1,13 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { LessThan, MoreThan, Repository } from 'typeorm';
+import { In, LessThan, MoreThan, Repository } from 'typeorm';
 import { RestaurantsClient } from '../restaurants-client/restaurants-client.service';
 import { generateSlotStarts } from '../scheduling/schedule';
 import { dayOfWeekOf, localToUtc, parseDateOnly } from '../scheduling/time-zone';
 import { BookingPolicy } from './booking-policy';
 import { AvailabilityQueryDto } from './dto/availability-query.dto';
 import { Reservation } from './entities/reservation.entity';
-import { ReservationStatus } from './entities/reservation-status.enum';
+import { BLOCKING_STATUSES } from './entities/reservation-status.enum';
 
 export interface AvailabilitySlot {
   startsAt: string;
@@ -79,7 +79,7 @@ export class AvailabilityService {
       select: { tableNumber: true, startsAt: true, endsAt: true },
       where: {
         restaurantId: query.restaurantId,
-        status: ReservationStatus.CONFIRMED,
+        status: In([...BLOCKING_STATUSES]), // las que esperan la seña también retienen la mesa
         startsAt: LessThan(windowEnd),
         endsAt: MoreThan(windowStart),
       },

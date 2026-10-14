@@ -1,6 +1,6 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 import { Request } from 'express';
-import { CORRELATION_HEADER } from '../common/correlation/correlation-id.middleware';
+import { CORRELATION_HEADER } from '../observability/correlation-id.middleware';
 import { CallContext } from '../upstream/upstream-client';
 
 /** Arma el contexto (token + correlation id) que se reenvía a los servicios: @Ctx() ctx: CallContext */

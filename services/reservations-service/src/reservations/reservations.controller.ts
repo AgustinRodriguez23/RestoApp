@@ -50,7 +50,9 @@ export class ReservationsController {
     summary: 'Crear una reserva',
     description:
       'La mesa se asigna sola: la más chica en la que entre el grupo y que esté libre. ' +
-      'Si dos personas piden el mismo horario a la vez, solo una lo consigue y la otra recibe 409.',
+      'Si dos personas piden el mismo horario a la vez, solo una lo consigue y la otra recibe 409. ' +
+      'Si hay seña configurada, la reserva nace PENDING_PAYMENT: la mesa queda retenida hasta `expiresAt` esperando el pago ' +
+      '(payments-service); al pagarse pasa a CONFIRMED y, si el plazo vence, a EXPIRED y la mesa se libera.',
   })
   @ApiCreatedResponse({ type: ReservationDto })
   @ApiBadRequestResponse({ description: 'Horario inválido, fuera de turno, pasado, o sin mesas para ese grupo' })

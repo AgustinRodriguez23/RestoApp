@@ -37,7 +37,11 @@ import { UsersModule } from './users/users.module';
           entities: [User],
           // synchronize crea las tablas solas: cómodo para desarrollar,
           // pero en producción se reemplaza por migraciones.
-          synchronize: config.get<string>('NODE_ENV') !== 'production',
+          // DB_SYNCHRONIZE=true/false lo fuerza; sin definir, se activa salvo en producción.
+          synchronize:
+            config.get<string>('DB_SYNCHRONIZE') !== undefined
+              ? config.get<string>('DB_SYNCHRONIZE') === 'true'
+              : config.get<string>('NODE_ENV') !== 'production',
         };
       },
     }),

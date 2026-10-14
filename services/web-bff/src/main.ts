@@ -3,10 +3,13 @@ import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
-import { CORRELATION_HEADER } from './common/correlation/correlation-id.middleware';
+import { CORRELATION_HEADER } from './observability/correlation-id.middleware';
+import { createLogger } from './observability/json-logger';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // bufferLogs: los logs del arranque esperan a que esté listo el logger JSON
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.useLogger(createLogger('web-bff'));
 
   // Es el único servicio que llama el navegador, así que es el único que necesita CORS
   app.enableCors({

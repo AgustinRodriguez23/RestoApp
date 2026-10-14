@@ -3,6 +3,8 @@ dist/
 coverage/
 .env
 *.log
+logs/*
+!logs/.gitkeep
 .DS_Store
 .idea/
 .vscode/

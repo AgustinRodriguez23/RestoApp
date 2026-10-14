@@ -22,18 +22,23 @@ services:
     build:
       context: ./services/auth-service
     container_name: auth-service
+    labels:
+      logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
     depends_on:
       postgres-auth:
         condition: service_healthy
     environment:
       PORT: 3001
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       # Dentro de la red de Docker los servicios se encuentran por nombre
       DB_HOST: postgres-auth
       DB_PORT: 5432
       DB_USER: ${AUTH_DB_USER:-auth}
       DB_PASSWORD: ${AUTH_DB_PASSWORD:-auth_password}
       DB_NAME: ${AUTH_DB_NAME:-auth_db}
+      # Sin migraciones todavía: las imágenes (NODE_ENV=production) crean/actualizan las tablas al arrancar
+      DB_SYNCHRONIZE: "true"
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
     ports:
@@ -61,12 +66,15 @@ services:
     build:
       context: ./services/restaurants-service
     container_name: restaurants-service
+    labels:
+      logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
     depends_on:
       mongo-restaurants:
         condition: service_healthy
     environment:
       PORT: 3002
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       # Si cambiás la contraseña por una con caracteres especiales, codificala (URL-encode)
       MONGO_URI: mongodb://${RESTAURANTS_MONGO_USER:-restaurants}:${RESTAURANTS_MONGO_PASSWORD:-restaurants_password}@mongo-restaurants:27017/${RESTAURANTS_MONGO_DB:-restaurants_db}?authSource=admin
       # Mismo secreto que auth-service: así valida los JWT que ese servicio emite
@@ -97,49 +105,184 @@ services:
     build:
       context: ./services/reservations-service
     container_name: reservations-service
+    labels:
+      logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
     depends_on:
       postgres-reservations:
         condition: service_healthy
       restaurants-service:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
     environment:
       PORT: 3003
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       DB_HOST: postgres-reservations
       DB_PORT: 5432
       DB_USER: ${RESERVATIONS_DB_USER:-reservations}
       DB_PASSWORD: ${RESERVATIONS_DB_PASSWORD:-reservations_password}
       DB_NAME: ${RESERVATIONS_DB_NAME:-reservations_db}
+      # Sin migraciones todavía: las imágenes (NODE_ENV=production) crean/actualizan las tablas al arrancar
+      DB_SYNCHRONIZE: "true"
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       # Dentro de la red de Docker los servicios se encuentran por nombre
       RESTAURANTS_SERVICE_URL: http://restaurants-service:3002
       RESTAURANT_TIME_ZONE: ${RESTAURANT_TIME_ZONE:-America/Argentina/Buenos_Aires}
       RESERVATION_DURATION_MINUTES: ${RESERVATION_DURATION_MINUTES:-90}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:-reservas_password}@rabbitmq:5672
+      # Seña por persona, en centavos (0 = sin seña: las reservas nacen confirmadas)
+      DEPOSIT_PER_PERSON_CENTS: ${DEPOSIT_PER_PERSON_CENTS:-200000}
+      DEPOSIT_CURRENCY: ${DEPOSIT_CURRENCY:-ARS}
+      PAYMENT_WINDOW_MINUTES: ${PAYMENT_WINDOW_MINUTES:-15}
+      REFUND_CUTOFF_HOURS: ${REFUND_CUTOFF_HOURS:-24}
     ports:
       - "${RESERVATIONS_PORT:-3003}:3003"
+
+  # ---------- Mensajería y pagos (Fase 6) ----------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-reservas}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-reservas_password}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672" # AMQP: lo usan los servicios
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672" # panel web: http://localhost:15672
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  postgres-payments:
+    image: postgres:16-alpine
+    container_name: postgres-payments
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PAYMENTS_DB_USER:-payments}
+      POSTGRES_PASSWORD: ${PAYMENTS_DB_PASSWORD:-payments_password}
+      POSTGRES_DB: ${PAYMENTS_DB_NAME:-payments_db}
+    ports:
+      # Puerto 5435 en tu máquina (5433 auth, 5434 reservations)
+      - "${PAYMENTS_DB_PORT:-5435}:5432"
+    volumes:
+      - postgres-payments-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PAYMENTS_DB_USER:-payments} -d ${PAYMENTS_DB_NAME:-payments_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  payments-service:
+    build:
+      context: ./services/payments-service
+    container_name: payments-service
+    labels:
+      logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
+    restart: unless-stopped
+    depends_on:
+      postgres-payments:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PORT: 3004
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_HOST: postgres-payments
+      DB_PORT: 5432
+      DB_USER: ${PAYMENTS_DB_USER:-payments}
+      DB_PASSWORD: ${PAYMENTS_DB_PASSWORD:-payments_password}
+      DB_NAME: ${PAYMENTS_DB_NAME:-payments_db}
+      # Sin migraciones todavía: las imágenes (NODE_ENV=production) crean/actualizan las tablas al arrancar
+      DB_SYNCHRONIZE: "true"
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:-reservas_password}@rabbitmq:5672
+      # Pasarela: 'simulated' (la de desarrollo). Más adelante, la real elegida por esta variable.
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-simulated}
+      GATEWAY_WEBHOOK_SECRET: ${GATEWAY_WEBHOOK_SECRET:?Definí GATEWAY_WEBHOOK_SECRET en el archivo .env}
+      SIMULATED_WEBHOOK_DELAY_MS: ${SIMULATED_WEBHOOK_DELAY_MS:-3000}
+    ports:
+      - "${PAYMENTS_PORT:-3004}:3004"
 
   web-bff:
     build:
       context: ./services/web-bff
     container_name: web-bff
+    labels:
+      logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
     depends_on:
       - auth-service
       - restaurants-service
       - reservations-service
+      - payments-service
     environment:
       PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       # Dentro de la red de Docker los servicios se encuentran por nombre
       AUTH_SERVICE_URL: http://auth-service:3001
       RESTAURANTS_SERVICE_URL: http://restaurants-service:3002
       RESERVATIONS_SERVICE_URL: http://reservations-service:3003
+      PAYMENTS_SERVICE_URL: http://payments-service:3004
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-3000}
     ports:
       - "${BFF_PORT:-3000}:3000"
 
+  # ---------- Observabilidad: logs centralizados ----------
+  loki:
+    image: grafana/loki:3.5.0
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    container_name: alloy
+    restart: unless-stopped
+    command: run --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    depends_on:
+      - loki
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # Para descubrir los contenedores y leer sus logs (solo lectura)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Logs de los servicios que corrés fuera de Docker (LOG_DIR=../../logs)
+      - ./logs:/var/log/reservas:ro
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      - loki
+    environment:
+      # SOLO PARA DESARROLLO LOCAL: entra directo, sin usuario ni contraseña
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3030}:3000"
+
 volumes:
+  rabbitmq-data:
+  postgres-payments-data:
   postgres-auth-data:
   mongo-restaurants-data:
   postgres-reservations-data:
+  loki-data:
+  grafana-data:

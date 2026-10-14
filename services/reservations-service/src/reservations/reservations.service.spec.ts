@@ -6,11 +6,13 @@ import {
 } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Test } from '@nestjs/testing';
-import { FindOperator, QueryFailedError } from 'typeorm';
+import { DataSource, FindOperator, QueryFailedError } from 'typeorm';
+import { OutboxService } from '../messaging/outbox.service';
 import { RestaurantInfo, RestaurantsClient } from '../restaurants-client/restaurants-client.service';
 import { JwtPayload } from '../security/jwt-payload';
 import { Role } from '../security/role.enum';
 import { BookingPolicy } from './booking-policy';
+import { DepositPolicy } from './deposit-policy';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { Reservation } from './entities/reservation.entity';
 import { ReservationStatus } from './entities/reservation-status.enum';
@@ -18,7 +20,7 @@ import { isExclusionViolation, ReservationsService } from './reservations.servic
 
 const RID = '64b7f0c2a1b2c3d4e5f60718';
 const RES_ID = '3f2b1c5e-8a41-4c0e-9d3a-7a1f2b6c9d10';
-const { CONFIRMED, CANCELLED, COMPLETED, NO_SHOW } = ReservationStatus;
+const { CONFIRMED, CANCELLED, COMPLETED, NO_SHOW, PENDING_PAYMENT, EXPIRED } = ReservationStatus;
 
 // Lunes 12 de octubre de 2026, 12:00 en Buenos Aires
 const NOW = new Date('2026-10-12T15:00:00Z');
@@ -61,6 +63,8 @@ const reservation = (overrides: Partial<Reservation> = {}): Reservation =>
     startsAt: FUTURE_START,
     endsAt: new Date(FUTURE_START.getTime() + 90 * 60_000),
     status: CONFIRMED,
+    depositCents: 0,
+    expiresAt: null,
     notes: null,
     cancelledAt: null,
     cancelledBy: null,
@@ -87,6 +91,17 @@ describe('ReservationsService', () => {
     findAndCount: jest.Mock;
   };
   let restaurants: { getRestaurant: jest.Mock };
+  let outbox: { enqueue: jest.Mock };
+  let deposit: DepositPolicy;
+  let transaction: jest.Mock;
+  let txManager: { getRepository: () => unknown };
+
+  /** Política de seña de los tests: 5000 centavos por persona, 24 h de corte de reembolso, 15 min para pagar. */
+  const makeDeposit = (perPersonCents: number) =>
+    new DepositPolicy({
+      get: (name: string) =>
+        ({ DEPOSIT_PER_PERSON_CENTS: String(perPersonCents), PAYMENT_WINDOW_MINUTES: '15', REFUND_CUTOFF_HOURS: '24' })[name],
+    } as never);
 
   beforeAll(() => {
     jest.useFakeTimers().setSystemTime(NOW);
@@ -107,6 +122,11 @@ describe('ReservationsService', () => {
       findAndCount: jest.fn(),
     };
     restaurants = { getRestaurant: jest.fn().mockResolvedValue(restaurant) };
+    outbox = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    deposit = makeDeposit(0); // sin seña por defecto: es el comportamiento de antes de existir los pagos
+    // Una "transacción" de mentira: ejecuta el callback con un manager que usa el mismo repo simulado
+    txManager = { getRepository: () => repo };
+    transaction = jest.fn(async (fn: (m: unknown) => unknown) => fn(txManager));
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -114,6 +134,9 @@ describe('ReservationsService', () => {
         { provide: getRepositoryToken(Reservation), useValue: repo },
         { provide: RestaurantsClient, useValue: restaurants },
         { provide: BookingPolicy, useValue: policy },
+        { provide: DepositPolicy, useFactory: () => deposit },
+        { provide: DataSource, useValue: { transaction } },
+        { provide: OutboxService, useValue: outbox },
       ],
     }).compile();
     service = moduleRef.get(ReservationsService);
@@ -263,6 +286,86 @@ describe('ReservationsService', () => {
     });
   });
 
+  describe('create con seña', () => {
+    beforeEach(async () => {
+      deposit = makeDeposit(5000);
+      // se vuelve a armar el servicio con la política con seña
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          ReservationsService,
+          { provide: getRepositoryToken(Reservation), useValue: repo },
+          { provide: RestaurantsClient, useValue: restaurants },
+          { provide: BookingPolicy, useValue: policy },
+          { provide: DepositPolicy, useValue: deposit },
+          { provide: DataSource, useValue: { transaction } },
+          { provide: OutboxService, useValue: outbox },
+        ],
+      }).compile();
+      service = moduleRef.get(ReservationsService);
+    });
+
+    it('nace PENDING_PAYMENT con la seña (por persona × comensales) y una hora límite para pagar', async () => {
+      await service.create(customer, dto({ partySize: 3 }));
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: PENDING_PAYMENT,
+          depositCents: 15000,
+          expiresAt: new Date(NOW.getTime() + 15 * 60_000),
+        }),
+      );
+    });
+
+    it('deja el evento reservation.created en el outbox, dentro de la misma transacción que la reserva', async () => {
+      const result = await service.create(customer, dto({ partySize: 3 }));
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(outbox.enqueue).toHaveBeenCalledTimes(1);
+      const [manager, type, data] = outbox.enqueue.mock.calls[0];
+      expect(manager).toBe(txManager); // el manager de LA transacción: si fuera otro, el evento no se revertiría junto con la reserva
+      expect(type).toBe('reservation.created');
+      expect(data).toEqual({
+        reservationId: result.id,
+        customerId: 'cust-1',
+        restaurantId: RID,
+        amountCents: 15000,
+        currency: 'ARS',
+        expiresAt: new Date(NOW.getTime() + 15 * 60_000).toISOString(),
+      });
+    });
+
+    it('si la mesa está ocupada, la reserva fallida no deja eventos y se reintenta con otra mesa', async () => {
+      repo.save
+        .mockRejectedValueOnce(exclusionError())
+        .mockImplementationOnce(async (entity: Partial<Reservation>) => ({ id: RES_ID, ...entity }));
+
+      await service.create(customer, dto({ partySize: 3 }));
+
+      expect(transaction).toHaveBeenCalledTimes(2); // una transacción por mesa probada
+      expect(outbox.enqueue).toHaveBeenCalledTimes(1); // el evento solo se encoló en la que funcionó
+    });
+
+    it('sin seña configurada, nace CONFIRMED y emite reservation.confirmed', async () => {
+      deposit = makeDeposit(0);
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          ReservationsService,
+          { provide: getRepositoryToken(Reservation), useValue: repo },
+          { provide: RestaurantsClient, useValue: restaurants },
+          { provide: BookingPolicy, useValue: policy },
+          { provide: DepositPolicy, useValue: deposit },
+          { provide: DataSource, useValue: { transaction } },
+          { provide: OutboxService, useValue: outbox },
+        ],
+      }).compile();
+
+      await moduleRef.get(ReservationsService).create(customer, dto());
+
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ status: CONFIRMED, depositCents: 0, expiresAt: null }));
+      expect(outbox.enqueue.mock.calls[0][1]).toBe('reservation.confirmed');
+    });
+  });
+
   describe('findOne', () => {
     it('quien hizo la reserva la puede ver, sin consultar a restaurants-service', async () => {
       repo.findOneBy.mockResolvedValue(reservation());
@@ -313,6 +416,61 @@ describe('ReservationsService', () => {
       expect(result.status).toBe(CANCELLED);
     });
 
+    it('emite reservation.cancelled en la misma transacción que el cambio de estado', async () => {
+      repo.findOneBy.mockResolvedValueOnce(reservation({ depositCents: 15000 })).mockResolvedValueOnce(cancelled);
+      repo.update.mockResolvedValue({ affected: 1 });
+
+      await service.cancel(RES_ID, customer);
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(outbox.enqueue.mock.calls[0][0]).toBe(txManager);
+      expect(outbox.enqueue).toHaveBeenCalledWith(expect.anything(), 'reservation.cancelled', {
+        reservationId: RES_ID,
+        customerId: 'cust-1',
+        restaurantId: RID,
+        reason: 'CANCELLED_BY_CUSTOMER',
+        refundable: true, // faltan más de 24 h
+        depositCents: 15000,
+      });
+    });
+
+    it('cancelar con menos de 24 h de anticipación NO es reembolsable', async () => {
+      const soon = new Date(NOW.getTime() + 5 * 3_600_000);
+      repo.findOneBy.mockResolvedValueOnce(reservation({ startsAt: soon })).mockResolvedValueOnce(cancelled);
+      repo.update.mockResolvedValue({ affected: 1 });
+
+      await service.cancel(RES_ID, customer);
+
+      expect(outbox.enqueue.mock.calls[0][2]).toMatchObject({ refundable: false });
+    });
+
+    it('si cancela el dueño, la seña siempre se devuelve (aunque falten pocas horas)', async () => {
+      const soon = new Date(NOW.getTime() + 2 * 3_600_000);
+      repo.findOneBy.mockResolvedValueOnce(reservation({ startsAt: soon })).mockResolvedValueOnce(cancelled);
+      repo.update.mockResolvedValue({ affected: 1 });
+
+      await service.cancel(RES_ID, owner);
+
+      expect(outbox.enqueue.mock.calls[0][2]).toMatchObject({ reason: 'CANCELLED_BY_OWNER', refundable: true });
+    });
+
+    it('se puede cancelar una reserva que todavía espera el pago', async () => {
+      repo.findOneBy.mockResolvedValueOnce(reservation({ status: PENDING_PAYMENT })).mockResolvedValueOnce(cancelled);
+      repo.update.mockResolvedValue({ affected: 1 });
+
+      await service.cancel(RES_ID, customer);
+
+      expect(repo.update).toHaveBeenCalledWith({ id: RES_ID, status: PENDING_PAYMENT }, expect.objectContaining({ status: CANCELLED, expiresAt: null }));
+    });
+
+    it('si el UPDATE condicional no toca nada (409), no se emite ningún evento', async () => {
+      repo.findOneBy.mockResolvedValue(reservation());
+      repo.update.mockResolvedValue({ affected: 0 });
+
+      await expect(service.cancel(RES_ID, customer)).rejects.toThrow(/cambió de estado/);
+      expect(outbox.enqueue).not.toHaveBeenCalled();
+    });
+
     it('el dueño del restaurante también puede cancelar', async () => {
       repo.findOneBy.mockResolvedValueOnce(reservation()).mockResolvedValueOnce(cancelled);
       repo.update.mockResolvedValue({ affected: 1 });
@@ -332,7 +490,7 @@ describe('ReservationsService', () => {
       expect(repo.update).not.toHaveBeenCalled();
     });
 
-    it.each([CANCELLED, COMPLETED, NO_SHOW])('no se puede cancelar una reserva %s (409)', async (status) => {
+    it.each([CANCELLED, EXPIRED, COMPLETED, NO_SHOW])('no se puede cancelar una reserva %s (409)', async (status) => {
       repo.findOneBy.mockResolvedValue(reservation({ status }));
 
       await expect(service.cancel(RES_ID, customer)).rejects.toBeInstanceOf(ConflictException);

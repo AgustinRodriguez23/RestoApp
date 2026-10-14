@@ -1,10 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsISO8601, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { IsEnum, IsInt, IsISO8601, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { OBJECT_ID_REGEX } from '../../common/pipes/parse-object-id.pipe';
 
 /** Copia del enum de reservations-service (el contrato entre servicios es el valor, no el código). */
 export enum ReservationStatus {
+  PENDING_PAYMENT = 'PENDING_PAYMENT',
+  EXPIRED = 'EXPIRED',
   CONFIRMED = 'CONFIRMED',
   CANCELLED = 'CANCELLED',
   COMPLETED = 'COMPLETED',
@@ -54,4 +56,15 @@ export class ListMyReservationsQueryDto {
   @IsOptional()
   @IsEnum(ReservationStatus)
   status?: ReservationStatus;
+}
+
+export class PayReservationDto {
+  @ApiProperty({
+    example: 'tok_approved',
+    description: 'Medio de pago tokenizado. Con la pasarela simulada: tok_approved, tok_declined, tok_insufficient_funds, tok_error, tok_slow, tok_slow_declined, tok_slow_duplicate.',
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  token: string;
 }

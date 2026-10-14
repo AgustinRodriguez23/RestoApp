@@ -4,6 +4,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { configureApp } from './app.setup';
+import { JsonLogger } from './observability/json-logger';
 import { FakeService, RecordedCall } from './test-utils/fake-service';
 
 /**
@@ -23,6 +24,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
   let auth: FakeService;
   let restaurants: FakeService;
   let reservations: FakeService;
+  let payments: FakeService;
   let jwt: JwtService;
 
   const token = (sub = 'user-1') => jwt.sign({ sub, email: `${sub}@example.com`, role: 'CUSTOMER' });
@@ -31,12 +33,15 @@ describe('web-bff (HTTP + servicios falsos)', () => {
   const query = (call: RecordedCall) => Object.fromEntries(new URL(call.path, 'http://x').searchParams);
 
   beforeAll(async () => {
-    [auth, restaurants, reservations] = await Promise.all([FakeService.start(), FakeService.start(), FakeService.start()]);
+    [auth, restaurants, reservations, payments] = await Promise.all([FakeService.start(), FakeService.start(), FakeService.start(), FakeService.start()]);
     Object.assign(process.env, {
       JWT_SECRET: 'bff-test-secret',
       AUTH_SERVICE_URL: auth.url,
       RESTAURANTS_SERVICE_URL: restaurants.url,
       RESERVATIONS_SERVICE_URL: reservations.url,
+      PAYMENTS_SERVICE_URL: payments.url,
+      PAYMENT_LOOKUP_ATTEMPTS: '3',
+      PAYMENT_LOOKUP_DELAY_MS: '0',
       UPSTREAM_TIMEOUT_MS: '400',
       UPSTREAM_RETRY_DELAY_MS: '0',
     });
@@ -53,12 +58,12 @@ describe('web-bff (HTTP + servicios falsos)', () => {
 
   afterAll(async () => {
     await app.close();
-    await Promise.all([auth.stop(), restaurants.stop(), reservations.stop()]);
+    await Promise.all([auth.stop(), restaurants.stop(), reservations.stop(), payments.stop()]);
     jest.restoreAllMocks();
   });
 
   beforeEach(() => {
-    for (const fake of [auth, restaurants, reservations]) fake.reset(() => fail(404, 'ruta no definida en el test'));
+    for (const fake of [auth, restaurants, reservations, payments]) fake.reset(() => fail(404, 'ruta no definida en el test'));
   });
 
   describe('autenticación', () => {
@@ -391,6 +396,153 @@ describe('web-bff (HTTP + servicios falsos)', () => {
     });
   });
 
+  describe('pagos de la seña', () => {
+    const PAY_ID = '9b2c3d4e-1111-4c0e-9d3a-7a1f2b6c9d10';
+    const KEY = 'b1f6d3a0-5c1e-4f6e-9a55-2f1d7c1e8a10';
+    const payment = (status = 'PENDING') => ({ id: PAY_ID, reservationId: RES_ID, status, amountCents: 15000, currency: 'ARS', expiresAt: '2026-10-16T21:15:00.000Z', failureReason: null });
+    const pay = (body: object = { token: 'tok_approved' }, key: string | null = KEY, id = RES_ID) => {
+      const req = server().post(`/reservations/${id}/pay`).set('Authorization', authz('cust-7'));
+      if (key !== null) req.set('Idempotency-Key', key);
+      return req.send(body);
+    };
+
+    it('pagar: busca el pago de la reserva y cobra con la Idempotency-Key, reenviando el token del usuario', async () => {
+      payments.handler = (call) =>
+        call.method === 'GET' ? ok(payment()) : ok(payment('SUCCEEDED'));
+
+      const res = await pay();
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ id: PAY_ID, status: 'SUCCEEDED' });
+      expect(payments.calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET /payments/by-reservation/${RES_ID}`, `POST /payments/${PAY_ID}/pay`]);
+      const post = payments.calls[1];
+      expect(post.body).toEqual({ token: 'tok_approved' });
+      expect(post.headers['idempotency-key']).toBe(KEY);
+      expect(post.headers.authorization).toBe(payments.calls[0].headers.authorization);
+    });
+
+    it('una respuesta repetida de payments (misma Idempotency-Key) se reconoce con el header Idempotent-Replayed', async () => {
+      payments.handler = (call) => (call.method === 'GET' ? ok(payment()) : { status: 200, body: payment('SUCCEEDED'), headers: { 'Idempotent-Replayed': 'true' } });
+
+      const res = await pay();
+
+      expect(res.headers['idempotent-replayed']).toBe('true');
+      expect((await pay()).status).toBe(200);
+    });
+
+    it('si la pasarela todavía procesa, el 202 llega como 202', async () => {
+      payments.handler = (call) => (call.method === 'GET' ? ok(payment()) : { status: 202, body: payment('PROCESSING') });
+
+      const res = await pay({ token: 'tok_slow' });
+
+      expect(res.status).toBe(202);
+      expect(res.body.status).toBe('PROCESSING');
+    });
+
+    it('el pago se crea de forma asíncrona: si todavía no existe, espera y reintenta antes de rendirse', async () => {
+      let lookups = 0;
+      payments.handler = (call) => {
+        if (call.method === 'POST') return ok(payment('SUCCEEDED'));
+        return ++lookups < 3 ? fail(404, 'Pago no encontrado') : ok(payment());
+      };
+
+      const res = await pay();
+
+      expect(res.status).toBe(200);
+      expect(lookups).toBe(3);
+    });
+
+    it('si el pago nunca aparece, responde 404 con un mensaje claro (y no cobra nada)', async () => {
+      payments.handler = () => fail(404, 'Pago no encontrado');
+
+      const res = await pay();
+
+      expect(res.status).toBe(404);
+      expect(res.body.message).toMatch(/no tiene un pago pendiente/);
+      expect(payments.calls.every((c) => c.method === 'GET')).toBe(true);
+      expect(payments.calls).toHaveLength(3);
+    });
+
+    it('un 409 de payments (ya pagado, vencido...) llega tal cual', async () => {
+      payments.handler = (call) => (call.method === 'GET' ? ok(payment()) : fail(409, 'Venció el plazo para pagar esta reserva'));
+
+      const res = await pay();
+
+      expect(res.status).toBe(409);
+      expect(res.body.message).toBe('Venció el plazo para pagar esta reserva');
+    });
+
+    it('si payments-service falla al cobrar, el POST NO se reintenta (no cobrar dos veces)', async () => {
+      payments.handler = (call) => (call.method === 'GET' ? ok(payment()) : fail(500, 'caído'));
+
+      const res = await pay();
+
+      expect(res.status).toBe(502);
+      expect(payments.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    });
+
+    it('valida Idempotency-Key y token ANTES de llamar a nadie', async () => {
+      expect((await pay({ token: 'tok_approved' }, null)).status).toBe(400);
+      expect((await pay({ token: 'tok_approved' }, 'corta')).status).toBe(400);
+      expect((await pay({})).status).toBe(400);
+      expect((await pay({ token: 'x', amountCents: 1 })).status).toBe(400);
+      expect((await pay({ token: 'x' }, KEY, 'no-es-uuid')).status).toBe(400);
+      expect(payments.calls).toHaveLength(0);
+    });
+
+    it('sin token de usuario responde 401', async () => {
+      expect((await server().post(`/reservations/${RES_ID}/pay`).set('Idempotency-Key', KEY).send({ token: 'tok_approved' })).status).toBe(401);
+    });
+
+    it('GET /reservations/:id/payment devuelve el pago', async () => {
+      payments.handler = () => ok(payment('FAILED'));
+
+      const res = await server().get(`/reservations/${RES_ID}/payment`).set('Authorization', authz());
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('FAILED');
+    });
+
+    describe('el estado del pago aparece en las reservas', () => {
+      const withDeposit = (id: string, depositCents: number) => ({ id, restaurantId: RID, startsAt: '2026-10-16T21:00:00-03:00', status: 'PENDING_PAYMENT', depositCents });
+
+      beforeEach(() => {
+        restaurants.handler = () => ok({ id: RID, name: 'La Parrilla' });
+      });
+
+      it('"mine" suma el pago de las reservas con seña, y solo consulta las que tienen seña', async () => {
+        reservations.handler = () => ok({ data: [withDeposit('11111111-1111-4111-8111-111111111111', 15000), withDeposit('22222222-2222-4222-8222-222222222222', 0)] });
+        payments.handler = (call) => (call.path.endsWith('11111111-1111-4111-8111-111111111111') ? ok(payment()) : fail(404, 'x'));
+
+        const res = await server().get('/reservations/mine').set('Authorization', authz());
+
+        expect(res.body.data[0].payment).toMatchObject({ id: PAY_ID, status: 'PENDING' });
+        expect(res.body.data[1].payment).toBeNull();
+        expect(payments.calls).toHaveLength(1);
+      });
+
+      it('si payments-service está caído, la reserva sale igual con payment: null', async () => {
+        reservations.handler = () => ok({ data: [withDeposit('11111111-1111-4111-8111-111111111111', 15000)] });
+        payments.handler = () => fail(500, 'caído');
+
+        const res = await server().get('/reservations/mine').set('Authorization', authz());
+
+        expect(res.status).toBe(200);
+        expect(res.body.data[0]).toMatchObject({ id: '11111111-1111-4111-8111-111111111111', payment: null, restaurant: { name: 'La Parrilla' } });
+      });
+
+      it('crear una reserva con seña la devuelve PENDING_PAYMENT (el pago todavía puede no existir: payment null)', async () => {
+        reservations.handler = () => ({ status: 201, body: withDeposit(RES_ID, 15000) });
+        payments.handler = () => fail(404, 'Pago no encontrado');
+
+        const res = await server().post('/reservations').set('Authorization', authz()).send({ restaurantId: RID, partySize: 3, startsAt: '2026-10-16T21:00:00-03:00' });
+
+        expect(res.status).toBe(201);
+        expect(res.body).toMatchObject({ status: 'PENDING_PAYMENT', depositCents: 15000, payment: null });
+      });
+    });
+  });
+
   describe('GET /me/overview', () => {
     const inHours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
     const mine = (...startsAt: string[]) =>
@@ -411,7 +563,10 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       expect(res.body.upcomingReservations.map((r: { id: string }) => r.id)).toEqual(['r2', 'r3', 'r0']); // la pasada (r1) no está
       expect(res.body.upcomingReservations[0].restaurant.name).toBe('La Parrilla');
       expect(res.body.warnings).toEqual([]);
-      expect(reservations.calls[0].path).toBe('/reservations/mine?status=CONFIRMED&limit=50');
+      expect(reservations.calls.map((c) => c.path).sort()).toEqual([
+        '/reservations/mine?status=CONFIRMED&limit=50',
+        '/reservations/mine?status=PENDING_PAYMENT&limit=10',
+      ]);
     });
 
     it('muestra como máximo 5', async () => {
@@ -430,7 +585,37 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       expect(res.status).toBe(200);
       expect(res.body.user.name).toBe('Ana');
       expect(res.body.upcomingReservations).toBeNull();
-      expect(res.body.warnings).toEqual([{ section: 'upcomingReservations', message: expect.any(String) }]);
+      expect(res.body.pendingPayments).toBeNull();
+      expect(res.body.warnings).toEqual([
+        { section: 'upcomingReservations', message: expect.any(String) },
+        { section: 'pendingPayments', message: expect.any(String) },
+      ]);
+    });
+
+    it('suma las reservas que esperan el pago (con su pago), aparte de las próximas', async () => {
+      reservations.handler = (call) =>
+        call.path.includes('PENDING_PAYMENT')
+          ? ok({ data: [{ id: 'p1', restaurantId: RID, startsAt: inHours(30), status: 'PENDING_PAYMENT', depositCents: 15000 }] })
+          : mine(inHours(2));
+      payments.handler = () => ok({ id: 'pay-1', status: 'PENDING', amountCents: 15000 });
+
+      const res = await server().get('/me/overview').set('Authorization', authz());
+
+      expect(res.body.upcomingReservations.map((r: { id: string }) => r.id)).toEqual(['r0']);
+      expect(res.body.pendingPayments).toEqual([
+        expect.objectContaining({ id: 'p1', restaurant: { id: RID, name: 'La Parrilla' }, payment: expect.objectContaining({ id: 'pay-1' }) }),
+      ]);
+    });
+
+    it('si falla solo la consulta de pendientes, lo demás se muestra y viene un aviso', async () => {
+      reservations.handler = (call) => (call.path.includes('PENDING_PAYMENT') ? fail(500, 'caído') : mine(inHours(2)));
+
+      const res = await server().get('/me/overview').set('Authorization', authz());
+
+      expect(res.status).toBe(200);
+      expect(res.body.upcomingReservations).toHaveLength(1);
+      expect(res.body.pendingPayments).toBeNull();
+      expect(res.body.warnings).toEqual([{ section: 'pendingPayments', message: expect.any(String) }]);
     });
 
     it('si auth-service falla, error (sin usuario no hay pantalla)', async () => {
@@ -448,19 +633,142 @@ describe('web-bff (HTTP + servicios falsos)', () => {
     });
   });
 
+  describe('trazabilidad de logs', () => {
+    type Line = Record<string, unknown>;
+    let lines: Line[];
+
+    beforeEach(() => {
+      jest.restoreAllMocks(); // el resto del archivo silencia warn/error; acá queremos verlos
+      lines = [];
+      Logger.overrideLogger(new JsonLogger({ service: 'web-bff', level: 'debug', write: (l) => lines.push(JSON.parse(l)) }));
+    });
+    afterEach(() => {
+      Logger.overrideLogger(false);
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    });
+
+    const of = (id: string) => lines.filter((l) => l.correlationId === id);
+
+    it('TODOS los logs de una request comparten su correlationId: el de entrada, las llamadas a otros servicios y el cierre', async () => {
+      restaurants.handler = (call) => (call.path.includes('/menu') ? ok([]) : ok({ id: RID, name: 'La Parrilla' }));
+      reservations.handler = () => ok({ slots: [] });
+
+      const res = await server().get(`/restaurants/${RID}/overview?date=2026-10-16&partySize=4`).set('x-correlation-id', 'traza-e2e-0001');
+
+      expect(res.status).toBe(200);
+      const mine = of('traza-e2e-0001');
+      const messages = mine.map((l) => l.message);
+      expect(messages.filter((m) => m === 'upstream call')).toHaveLength(3); // restaurante, carta, disponibilidad
+      expect(messages).toContain('request completed');
+      expect(mine.every((l) => l.service === 'web-bff')).toBe(true);
+      // y ningún log de esta request quedó sin id
+      expect(lines.filter((l) => !l.correlationId)).toEqual([]);
+    });
+
+    it('cada llamada a otro servicio registra a quién llamó, el status y cuánto tardó', async () => {
+      restaurants.handler = () => ({ ...ok({ id: RID, name: 'x' }), delayMs: 40 });
+
+      await server().get(`/restaurants/${RID}/overview`).set('x-correlation-id', 'traza-e2e-0002');
+
+      const call = of('traza-e2e-0002').find((l) => l.message === 'upstream call' && l.path === `/restaurants/${RID}`)!;
+      expect(call).toMatchObject({ upstream: 'restaurants', method: 'GET', status: 200 });
+      expect(call.durationMs as number).toBeGreaterThanOrEqual(35);
+    });
+
+    it('el mismo id llega a los servicios en el header: así sus logs se pueden cruzar con los del BFF', async () => {
+      restaurants.handler = () => ok({ data: [] });
+
+      await server().get('/restaurants').set('x-correlation-id', 'traza-e2e-0003');
+
+      expect(restaurants.calls[0].headers['x-correlation-id']).toBe('traza-e2e-0003');
+    });
+
+    it('un POST con body también conserva el id (el contexto sobrevive al parseo del body)', async () => {
+      auth.handler = () => ok({ accessToken: 'jwt' });
+
+      await server().post('/auth/login').set('x-correlation-id', 'traza-e2e-0004').send({ email: 'a@b.com', password: 'Password123' });
+
+      expect(of('traza-e2e-0004').map((l) => l.message)).toEqual(expect.arrayContaining(['upstream call', 'request completed']));
+      expect(auth.calls[0].headers['x-correlation-id']).toBe('traza-e2e-0004');
+    });
+
+    it('requests simultáneas no mezclan sus ids', async () => {
+      restaurants.handler = (call) => ({ ...ok({ data: [], path: call.path }), delayMs: 20 });
+      const ids = Array.from({ length: 8 }, (_, i) => `traza-conc-${i}000`);
+
+      await Promise.all(ids.map((id) => server().get('/restaurants').set('x-correlation-id', id)));
+
+      for (const id of ids) {
+        const mine = of(id);
+        expect(mine.map((l) => l.message).sort()).toEqual(['request completed', 'upstream call']);
+      }
+      // y cada llamada saliente llevó el id de su request, no el de otra
+      expect(restaurants.calls.map((c) => c.headers['x-correlation-id']).sort()).toEqual([...ids].sort());
+    });
+
+    it('el userId aparece en los logs de las requests autenticadas', async () => {
+      auth.handler = () => ok({ id: 'user-77' });
+
+      await server().get('/auth/me').set('Authorization', authz('user-77')).set('x-correlation-id', 'traza-e2e-0005');
+
+      expect(of('traza-e2e-0005').every((l) => l.userId === 'user-77')).toBe(true);
+    });
+
+    it('los errores también quedan trazados, con el nivel que corresponde', async () => {
+      restaurants.handler = () => fail(500, 'boom');
+
+      const res = await server().get(`/restaurants/${RID}/overview`).set('x-correlation-id', 'traza-e2e-0006');
+
+      expect(res.status).toBe(502);
+      const mine = of('traza-e2e-0006');
+      expect(mine.find((l) => l.message === 'request completed')).toMatchObject({ level: 'error', status: 502 });
+      expect(mine.filter((l) => l.message === 'upstream call' && l.level === 'warn').length).toBeGreaterThan(0);
+    });
+
+    it('los chequeos de salud no ensucian los logs normales (quedan en debug)', async () => {
+      for (const fake of [auth, restaurants, reservations, payments]) fake.handler = () => ok({ status: 'ok' });
+
+      await server().get('/health').set('x-correlation-id', 'traza-e2e-0007');
+
+      const mine = of('traza-e2e-0007');
+      expect(mine).toHaveLength(5); // la request de entrada + las 4 llamadas a los servicios
+      expect(mine.every((l) => l.level === 'debug')).toBe(true);
+    });
+
+    it('un token o una contraseña jamás aparece en los logs', async () => {
+      auth.handler = () => ok({ accessToken: 'ACCESS-TOKEN-SECRETO' });
+      const bearer = authz('user-1');
+
+      await server().post('/auth/login?debug=1').send({ email: 'a@b.com', password: 'ContraseñaSecreta123' });
+      await server().get('/auth/me').set('Authorization', bearer);
+
+      const everything = JSON.stringify(lines);
+      expect(everything).not.toContain('ContraseñaSecreta123');
+      expect(everything).not.toContain('ACCESS-TOKEN-SECRETO');
+      expect(everything).not.toContain(bearer.replace('Bearer ', ''));
+      expect(everything).not.toContain('debug=1');
+    });
+  });
+
   describe('GET /health', () => {
     it('ok si todos los servicios responden', async () => {
-      for (const fake of [auth, restaurants, reservations]) fake.handler = () => ok({ status: 'ok' });
+      for (const fake of [auth, restaurants, reservations, payments]) fake.handler = () => ok({ status: 'ok' });
 
       const res = await server().get('/health');
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ status: 'ok', service: 'web-bff', upstreams: { auth: 'up', restaurants: 'up', reservations: 'up' } });
+      expect(res.body).toEqual({
+        status: 'ok',
+        service: 'web-bff',
+        upstreams: { auth: 'up', restaurants: 'up', reservations: 'up', payments: 'up' },
+      });
     });
 
     it('degraded (pero 200) si alguno está caído', async () => {
       auth.handler = () => ok({});
       restaurants.handler = () => ok({});
+      payments.handler = () => ok({});
       reservations.handler = () => fail(500, 'caído');
 
       const res = await server().get('/health');
@@ -492,6 +800,8 @@ describe('web-bff (HTTP + servicios falsos)', () => {
           '/reservations/mine',
           '/reservations/{id}',
           '/reservations/{id}/cancel',
+          '/reservations/{id}/pay',
+          '/reservations/{id}/payment',
           '/restaurants',
           '/restaurants/{id}/overview',
         ].sort(),

@@ -1,0 +1,73 @@
+// Grafana Alloy: lee los logs y los manda a Loki. Tiene dos orígenes:
+//   1) Contenedores de Docker con la etiqueta  logging=reservas  (cuando corrés todo con `npm run up`)
+//   2) Archivos en ./logs/*.log                                  (cuando corrés los servicios con `npm run dev:*`
+//                                                                 y definís LOG_DIR=../../logs en tu .env)
+
+// ---------- 1) Contenedores ----------
+discovery.docker "reservas" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+
+  filter {
+    name   = "label"
+    values = ["logging=reservas"]
+  }
+}
+
+discovery.relabel "reservas" {
+  targets = discovery.docker.reservas.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "reservas" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.reservas.output
+  refresh_interval = "5s"
+  forward_to       = [loki.process.json.receiver]
+}
+
+// ---------- 2) Archivos (servicios fuera de Docker) ----------
+local.file_match "dev_logs" {
+  path_targets = [{ __path__ = "/var/log/reservas/*.log" }]
+}
+
+loki.source.file "dev_logs" {
+  targets    = local.file_match.dev_logs.targets
+  forward_to = [loki.process.json.receiver]
+}
+
+// ---------- Procesamiento común ----------
+// Cada línea es un JSON: se extraen el servicio y el nivel como etiquetas (pocas y de baja variedad).
+// El correlationId NO es una etiqueta a propósito: tiene millones de valores posibles y Loki se
+// vuelve lento. Se busca en el contenido de la línea con  | json | correlationId="..."
+loki.process "json" {
+  stage.json {
+    expressions = { level = "level", service = "service", timestamp = "timestamp" }
+  }
+
+  stage.timestamp {
+    source = "timestamp"
+    format = "RFC3339Nano"
+  }
+
+  stage.labels {
+    values = { level = "level", service = "service" }
+  }
+
+  stage.static_labels {
+    values = { app = "reservas" }
+  }
+
+  forward_to = [loki.write.loki.receiver]
+}
+
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

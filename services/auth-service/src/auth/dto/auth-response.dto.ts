@@ -8,7 +8,7 @@ export class UserResponseDto {
   @ApiProperty({ example: 'ana@example.com' })
   email: string;
 
-  @ApiProperty({ example: 'Marta García' })
+  @ApiProperty({ example: 'Ana García' })
   name: string;
 
   @ApiProperty({ enum: Role })

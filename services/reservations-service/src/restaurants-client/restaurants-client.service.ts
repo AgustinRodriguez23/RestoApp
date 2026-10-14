@@ -6,6 +6,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { currentCorrelationId } from '../observability/request-context';
 import { Shift } from '../scheduling/schedule';
 
 /** Lo que reservations-service necesita saber de un restaurante. */
@@ -65,16 +66,27 @@ export class RestaurantsClient {
   }
 
   private async fetchRestaurant(id: string): Promise<RestaurantInfo> {
+    // El id de la request original viaja a restaurants-service: sus logs se pueden cruzar con los de acá
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    const correlationId = currentCorrelationId();
+    if (correlationId) headers['x-correlation-id'] = correlationId;
+
+    const started = performance.now();
+    const info = { upstream: 'restaurants', method: 'GET', path: `/restaurants/${id}` };
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}/restaurants/${id}`, {
         signal: AbortSignal.timeout(this.timeoutMs),
-        headers: { Accept: 'application/json' },
+        headers,
       });
     } catch (error) {
       // Sin conexión o timeout
+      this.logger.warn({ message: 'upstream call failed', ...info, durationMs: Math.round(performance.now() - started) });
       throw new TransientError(error instanceof Error ? error.message : String(error));
     }
+    const outcome = { message: 'upstream call', ...info, status: response.status, durationMs: Math.round(performance.now() - started) };
+    if (response.status >= 500) this.logger.warn(outcome);
+    else this.logger.log(outcome);
 
     if (response.status === 404) throw new NotFoundException('Restaurante no encontrado');
     if (response.status >= 500) throw new TransientError(`HTTP ${response.status}`);

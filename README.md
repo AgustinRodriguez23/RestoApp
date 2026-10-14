@@ -2,7 +2,7 @@
 
 Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida como **arquitectura de microservicios**. Es un proyecto de práctica pensado para demostrar patrones reales: BFF, comunicación asíncrona con eventos, trazabilidad de logs, tests, Docker y CI/CD.
 
-> Estado: **Fase 4 completa** (`auth-service`, `restaurants-service`, `reservations-service` y `web-bff`). Las demás fases están en la hoja de ruta.
+> Estado: **Fase 6 completa** (RabbitMQ, `payments-service` y la saga de la seña con idempotencia, compensaciones y DLQ). Las demás fases están en la hoja de ruta.
 
 ## Arquitectura objetivo
 
@@ -27,8 +27,8 @@ Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida
 |---|---|---|---|---|
 | `auth-service` | Registro, login, JWT, roles | PostgreSQL | 3001 | ✅ Fase 1 |
 | `restaurants-service` | Restaurantes, mesas, horarios y carta | MongoDB | 3002 | ✅ Fase 2 |
-| `reservations-service` | Reservas, disponibilidad, estados (la seña llega en la Fase 6) | PostgreSQL | 3003 | ✅ Fase 3 |
-| `payments-service` | Seña y cobro, idempotencia, webhooks | PostgreSQL | — | Pendiente |
+| `reservations-service` | Reservas, disponibilidad, estados, seña y vencimiento | PostgreSQL | 3003 | ✅ Fase 3 y 6 |
+| `payments-service` | Seña y cobro, idempotencia, webhooks, reembolsos | PostgreSQL | 3004 | ✅ Fase 6 |
 | `notifications-service` | Consume eventos y notifica | MongoDB | — | Pendiente |
 | `web-bff` | Entrada única del frontend, agrega datos | — | 3000 | ✅ Fase 4 |
 
@@ -42,7 +42,7 @@ Requisitos: Node 20+ y Docker.
 
 ```bash
 # 1. Variables de entorno
-cp .env.example .env        # y cambiá JWT_SECRET por un valor propio
+cp .env.example .env        # y cambiá JWT_SECRET y GATEWAY_WEBHOOK_SECRET por valores propios
 
 # 2. Instalar dependencias de todos los servicios (npm workspaces)
 npm install
@@ -51,11 +51,13 @@ npm install
 npm run up
 
 # 3b. ...o solo las bases en Docker y los servicios en modo desarrollo
-npm run infra:up            # 2 PostgreSQL + MongoDB
+npm run infra:up            # 3 PostgreSQL + MongoDB + RabbitMQ
 npm run dev:auth            # en una terminal
 npm run dev:restaurants     # en otra terminal
 npm run dev:reservations    # en otra terminal
+npm run dev:payments        # en otra terminal
 npm run dev:bff             # en otra terminal (el frontend solo habla con este)
+npm run obs:up              # Loki + Alloy + Grafana (ver «Trazabilidad de logs»)
 ```
 
 | Servicio | API | Swagger | Health |
@@ -63,6 +65,8 @@ npm run dev:bff             # en otra terminal (el frontend solo habla con este)
 | auth | http://localhost:3001 | http://localhost:3001/docs | http://localhost:3001/health |
 | restaurants | http://localhost:3002 | http://localhost:3002/docs | http://localhost:3002/health |
 | reservations | http://localhost:3003 | http://localhost:3003/docs | http://localhost:3003/health |
+| payments | http://localhost:3004 | http://localhost:3004/docs | http://localhost:3004/health |
+| RabbitMQ (panel) | http://localhost:15672 (usuario `reservas`, clave `reservas_password`) | — | — |
 | **web-bff** | http://localhost:3000 | http://localhost:3000/docs | http://localhost:3000/health |
 
 ### Probar el flujo completo
@@ -72,6 +76,7 @@ npm run dev:bff             # en otra terminal (el frontend solo habla con este)
 3. Creá un restaurante (`POST /restaurants`) con mesas y horarios, agregale platos (`POST /restaurants/{id}/menu-items`) y mirá la carta pública (`GET /restaurants/{id}/menu`).
 4. En el Swagger de **reservations** consultá `GET /availability` (público) con el id del restaurante, un día y la cantidad de personas.
 5. Registrá un usuario `CUSTOMER`, autorizá con su token y reservá con `POST /reservations` usando uno de los horarios devueltos. Probá pedir el mismo horario dos veces: la segunda da 409.
+6. Con la seña activada (`DEPOSIT_PER_PERSON_CENTS` > 0, por defecto sí) la reserva queda `PENDING_PAYMENT`. Pagala con `POST /reservations/{id}/pay` **del BFF** (header `Idempotency-Key` y `{"token": "tok_approved"}`) y mirá cómo pasa a `CONFIRMED`. Todo el recorrido está explicado en «Fase 6: mensajería y pagos».
 
 ### Tests
 
@@ -90,6 +95,19 @@ npm run test:integration -w reservations-service
 ```
 
 Usan un schema temporal que borran al terminar (no tocan tus datos). Si tu Postgres está en otro lado, definí `TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` y `TEST_DB_NAME`.
+
+Desde la Fase 6 `reservations-service` y `payments-service` también prueban **contra RabbitMQ real** (reintentos, DLQ, duplicados, reconexión...); `npm run infra:up` levanta todo lo necesario (`RABBITMQ_TEST_URL` si tu broker está en otro lado; `TEST_DB_PORT=5435` para payments):
+
+```bash
+npm run test:integration           # todos los servicios con integración
+```
+
+Y hay una **prueba de punta a punta** que recorre la saga completa contra el sistema en marcha (BFF → reservas ⇄ RabbitMQ ⇄ pagos → pasarela simulada):
+
+```bash
+npm run up                         # o los servicios con dev:* + infra:up
+npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda más)
+```
 
 ## Decisiones de diseño (todos los servicios)
 
@@ -162,17 +180,17 @@ Usan un schema temporal que borran al terminar (no tocan tus datos). Si tu Postg
 | GET | `/reservations/:id` | quien reservó o el dueño | Detalle |
 | POST | `/reservations/:id/cancel` | quien reservó o el dueño | Cancela, solo antes de que empiece |
 | PATCH | `/reservations/:id/status` | dueño del restaurante | `COMPLETED` o `NO_SHOW`, una vez que la reserva empezó |
-| GET | `/health` | público | Estado del servicio y de PostgreSQL |
+| GET | `/health` | público | Estado del servicio, de PostgreSQL y de RabbitMQ |
 
 ### Decisiones de diseño
 
 - **Evitar la reserva doble lo decide la base, no el código.** Chequear "¿está libre?" y después insertar no es seguro si dos requests llegan a la vez: las dos ven la mesa libre. Por eso la tabla tiene una restricción `EXCLUDE USING gist` (con `btree_gist`) sobre `(restaurante, mesa, rango de tiempo)` para las reservas `CONFIRMED`. El servicio simplemente intenta insertar; si PostgreSQL responde `23P01` (solapamiento), prueba con la siguiente mesa apta y, si no queda ninguna, responde **409**. Se probó con 20 pedidos simultáneos sobre una sola mesa: exactamente uno gana.
 - **Rangos `[inicio, fin)`**: una reserva que termina a las 21:30 y otra que empieza a las 21:30 en la misma mesa no se pisan.
-- **Solo las `CONFIRMED` bloquean la mesa**: cancelar la libera.
+- **Bloquean la mesa las `CONFIRMED` y las `PENDING_PAYMENT`** (esperando la seña): cancelar, vencer o fallar el pago la libera. Al arrancar, si la base tiene la restricción vieja (solo `CONFIRMED`), se reemplaza sola en una transacción.
 - **Asignación automática de mesa**: la más chica en la que entra el grupo, así las mesas grandes quedan para grupos grandes.
 - **Duración fija (90 min) y grilla de 30 min**: simplifica la disponibilidad. Se cambia con `RESERVATION_DURATION_MINUTES` y `RESERVATION_SLOT_STEP_MINUTES`. También `RESERVATION_MAX_ADVANCE_DAYS` (90 por defecto).
 - **Zona horaria**: los horarios del restaurante son hora local (`RESTAURANT_TIME_ZONE`, por defecto Buenos Aires) y las reservas se guardan como instantes UTC (`timestamptz`). Se maneja con `Intl`, sin librerías, incluyendo los turnos que cruzan la medianoche y los cambios de horario de verano. Por ahora es **una sola zona para toda la plataforma**.
-- **Máquina de estados**: `CONFIRMED → CANCELLED | COMPLETED | NO_SHOW`; los otros tres son finales. Cada transición es un `UPDATE ... WHERE id = ? AND status = <el que leí>`: si dos requests compiten (por ejemplo, dos cancelaciones), solo una gana y la otra recibe 409.
+- **Máquina de estados**: `PENDING_PAYMENT → CONFIRMED | CANCELLED | EXPIRED` y `CONFIRMED → CANCELLED | COMPLETED | NO_SHOW`; el resto son finales. Cada transición es un `UPDATE ... WHERE id = ? AND status = <el que leí>`: si dos requests compiten (por ejemplo, dos cancelaciones), solo una gana y la otra recibe 409.
 - **Comunicación síncrona con restaurants-service** (HTTP con timeout de 3 s y un reintento) para conocer mesas y horarios. Si no responde, 503; si responde algo inesperado, 502. Sin caché por ahora.
 - **Recursos ajenos devuelven 404, no 403**: no se revela que una reserva de otra persona existe.
 - **El cliente de una reserva siempre es el usuario del token**; el DTO rechaza `customerId`, `status` o `tableNumber` (*mass assignment*).
@@ -183,7 +201,7 @@ Usan un schema temporal que borran al terminar (no tocan tus datos). Si tu Postg
 - Si el dueño modifica las mesas o los horarios en restaurants-service, las reservas ya hechas **no se revalidan**. Y si una mesa desaparece, sus reservas quedan apuntando a un número que ya no existe.
 - La restricción se crea al arrancar (`reservations-schema.bootstrap.ts`) y `synchronize` crea las tablas: para producción corresponde usar migraciones.
 - El usuario de la base necesita permiso para `CREATE EXTENSION btree_gist` (en el contenedor ya lo tiene).
-- No hay seña ni pago todavía: llegan en la Fase 6 con RabbitMQ.
+- Con `DEPOSIT_PER_PERSON_CENTS=0` no hay seña y las reservas nacen `CONFIRMED`, como antes de la Fase 6.
 
 ## web-bff
 
@@ -196,9 +214,11 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 | GET | `/restaurants` | Listado con búsqueda y filtros |
 | GET | `/restaurants/:id/overview` | **Agregada**: restaurante + carta + (con `?date=&partySize=`) horarios libres |
 | POST | `/reservations` | Crea la reserva; la respuesta incluye el nombre del restaurante |
-| GET | `/reservations/mine` | Mis reservas, **cada una con el nombre de su restaurante** |
+| GET | `/reservations/mine` | Mis reservas, **cada una con el nombre de su restaurante y el estado de su pago** |
 | GET | `/reservations/:id`, POST `/reservations/:id/cancel` | Ver y cancelar |
-| GET | `/me/overview` | **Agregada**: mi perfil + mis próximas 5 reservas |
+| POST | `/reservations/:id/pay` | **Paga la seña** (header `Idempotency-Key` obligatorio): busca el pago de la reserva y cobra |
+| GET | `/reservations/:id/payment` | Estado del pago de la seña |
+| GET | `/me/overview` | **Agregada**: mi perfil + mis próximas 5 reservas + las que esperan el pago |
 | GET | `/health` | Estado del BFF y de cada servicio (`ok` / `degraded`) |
 
 ### Decisiones de diseño
@@ -217,14 +237,161 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 - No hay endpoints para el dueño del restaurante (crear restaurantes, carta, ver reservas del local): se agregan cuando el frontend los necesite.
 - Los DTOs de entrada están duplicados respecto de cada servicio; si cambian allá hay que actualizarlos acá.
 
+## Fase 6: mensajería y pagos
+
+Al reservar con seña, **reservas** y **pagos** se coordinan solo con eventos por RabbitMQ (coreografía, sin que ninguno llame al otro por HTTP):
+
+```
+ cliente ──POST /reservations──▶ reservations ──reservation.created──▶ payments
+                                 (PENDING_PAYMENT,                      (crea el pago PENDING)
+                                  mesa retenida 15 min)
+ cliente ──POST /reservations/:id/pay (Idempotency-Key)──▶ BFF ──▶ payments ──▶ pasarela
+                                                                       │
+        ┌────────────────── payment.succeeded ◀────────────────────────┤  aprobado
+        ▼                                                              │
+ reservations: CONFIRMED                                               │  rechazado ──payment.failed──▶ reservations: CANCELLED (mesa libre)
+                                                                       │
+ plazo vencido ─ reservations: EXPIRED ──reservation.expired──▶ payments: pago EXPIRED
+ cancelación ───reservation.cancelled {refundable}────────────▶ payments: anula, o DEVUELVE la seña si corresponde
+ pago que llega tarde ──reservation.refund_requested──────────▶ payments: devuelve (compensación)
+```
+
+### Cómo probarlo a mano
+
+Con `npm run up` (la seña por defecto es $2.000 por persona), en el Swagger del **BFF** (http://localhost:3000/docs):
+
+1. `POST /reservations` → vuelve `PENDING_PAYMENT` con `depositCents` y `expiresAt` (la mesa queda retenida hasta ese momento).
+2. `POST /reservations/{id}/pay` con un header `Idempotency-Key` (cualquier UUID) y uno de los **tokens de prueba** de la pasarela simulada:
+
+| Token | Qué pasa |
+|---|---|
+| `tok_approved` | Aprobado al instante → la reserva pasa a `CONFIRMED` |
+| `tok_declined` / `tok_insufficient_funds` | Rechazado → la reserva se cancela y la mesa se libera |
+| `tok_error` | La pasarela "se cae": 502, no se cobró nada, se puede reintentar con la misma clave |
+| `tok_slow` | Responde **202** (`PROCESSING`) y a los 3 s la pasarela avisa **por webhook firmado** → `CONFIRMED` |
+| `tok_slow_declined` | Ídem, pero el webhook dice rechazado |
+| `tok_slow_duplicate` | El webhook llega **dos veces**: se aplica una sola |
+
+3. Repetí el mismo pedido con la misma `Idempotency-Key`: devuelve lo mismo (header `Idempotent-Replayed: true`) sin cobrar de nuevo. Con otra clave: 409 (ya está pagado).
+4. Probá **no pagar**: pasados `PAYMENT_WINDOW_MINUTES` la reserva queda `EXPIRED` y el pago también.
+5. Cancelá una reserva pagada: si faltan más de `REFUND_CUTOFF_HOURS` el pago pasa a `REFUNDED`; si no, la seña se pierde (si cancela el dueño del restaurante, siempre se devuelve).
+6. Mirá los mensajes en el panel de RabbitMQ (http://localhost:15672) y el recorrido completo en Grafana buscando el `correlationId` de la reserva.
+
+### Mensajería confiable (`src/messaging`, igual en reservations y payments)
+
+| Problema | Solución |
+|---|---|
+| Guardar en la base y publicar en RabbitMQ no pueden ser una sola transacción: un corte entre los dos pierde el evento o avisa de algo que no pasó | **Transactional outbox**: el evento se guarda como una fila en la **misma transacción** que el cambio de negocio; un *relay* lo publica después y reintenta con espera creciente hasta que RabbitMQ **confirma** (publisher confirms) |
+| Varias instancias del servicio publicarían lo mismo dos veces | El relay toma lotes con `FOR UPDATE SKIP LOCKED`: cada instancia agarra filas distintas y nunca espera a otra |
+| La entrega es "al menos una vez": un mensaje puede llegar repetido | **Consumidor idempotente**: se inserta `(consumidor, id del mensaje)` en `processed_messages` en la **misma transacción** que el efecto; si ya estaba, es un duplicado y solo se confirma |
+| El handler falla (error transitorio) | Va a `<cola>.retry`, que lo devuelve a la cola de trabajo pasado un tiempo (TTL + dead-letter). Hasta `maxAttempts` intentos |
+| El mensaje es basura, o el error nunca se va a arreglar solo | Directo a `<cola>.dlq` con el motivo (`x-error`) y los intentos, para inspeccionarlo y reprocesarlo a mano |
+| Se cae RabbitMQ | El servicio sigue andando y los eventos esperan en el outbox; la conexión se reintenta sola y los consumidores se vuelven a armar |
+| Seguir una saga entre servicios | El `correlationId` viaja en el sobre del evento y en el header del mensaje; el consumidor lo restaura antes de correr el handler |
+
+Sobre de todos los eventos: `{ id, type, occurredAt, correlationId, data }` (el `type` es la routing key del exchange `reservas.events`, de tipo *topic*). Los contratos están en `reservation-events.ts` (reservations) y `events/payment-events.ts` (payments).
+
+### payments-service
+
+| Método | Ruta | Quién | Descripción |
+|---|---|---|---|
+| GET | `/payments/by-reservation/:reservationId` | quien reservó | Pago de una reserva |
+| GET | `/payments/:id` | quien reservó | Detalle |
+| POST | `/payments/:id/pay` | quien reservó | Cobra la seña. **`Idempotency-Key` obligatorio**. 200 (resuelto) o 202 (la pasarela avisará por webhook) |
+| POST | `/webhooks/gateway` | la pasarela (firma HMAC, sin JWT) | Resultado de cobros asíncronos |
+| GET | `/health` | público | Base y RabbitMQ |
+
+Estados del pago: `PENDING → PROCESSING → SUCCEEDED → REFUNDED`, o `FAILED`, `EXPIRED`, `CANCELLED`.
+
+### Decisiones de diseño
+
+- **Idempotency-Key en la misma transacción que el cobro.** Si dos pedidos con la misma clave llegan a la vez, el segundo `INSERT` espera (lo serializa PostgreSQL) y después recibe la respuesta guardada: un solo cobro, sin estado "en proceso" ni locks propios. Si el proceso muere a mitad, todo se revierte y la clave queda libre. La misma clave con otro pedido → 422. Los errores 4xx se guardan y se repiten; los 5xx no (para poder reintentar). Además la pasarela recibe una clave estable por pago (`pay-<id>`): aunque algo falle entre el cobro y el guardado, reintentar no cobra dos veces.
+- **Un pago se cobra bajo un lock de su fila** (`SELECT … FOR UPDATE`): dos intentos simultáneos con claves distintas se ejecutan en fila y el segundo recibe 409.
+- **Pasarela detrás de una interfaz (`PaymentGateway`)**: `createCharge`, `parseWebhook` (verifica firma) y `refund`. Hoy hay una **pasarela simulada** con tokens de prueba y webhooks reales firmados. Para sumar **Mercado Pago** (o Stripe): escribir un `MercadoPagoGateway implements PaymentGateway`, agregar su rama en `gateway/gateway.module.ts` y poner `PAYMENT_PROVIDER=mercadopago` con sus credenciales. El resto del servicio no cambia. (Los tokens `tok_*` se reemplazan por el token que genera el SDK del navegador.)
+- **Webhooks**: firma HMAC-SHA256 con timestamp (`t=…,v1=…`), comparación en tiempo constante y tolerancia de 5 min contra repeticiones; se verifica sobre el **cuerpo crudo** (`rawBody`). Cada evento se deduplica por su id. Si el cobro todavía no existe (llegó antes de confirmarse el pedido), responde 404 y revierte, así la pasarela reintenta.
+- **Compensaciones**: pago rechazado → la reserva se cancela y la mesa vuelve a estar libre. Pago aprobado que llega cuando la reserva ya venció o se canceló → `reservation.refund_requested` → reembolso. Cancelación → reservations decide `refundable` (política de 24 h) y payments solo ejecuta.
+- **Mensajes desordenados**: si llega un evento sobre un pago que todavía no existe, se reintenta con demora (no es "veneno"): da tiempo a que llegue `reservation.created`.
+- **Vencimiento**: un `UPDATE … RETURNING` cada `EXPIRATION_CHECK_MS`; con varias instancias, cada reserva vence una sola vez.
+- **Esquema de la base**: todavía no hay migraciones; los servicios usan `synchronize` de TypeORM. Como las imágenes corren con `NODE_ENV=production` (donde está apagado), `docker-compose.yml` pone `DB_SYNCHRONIZE=true`. En producción de verdad se reemplaza por migraciones.
+- **Reservas con pago en proceso (`PROCESSING`)** no se tocan al cancelarse o vencer: manda el resultado del webhook (y si se aprobó, se devuelve).
+
+### Limitaciones conocidas
+
+- **No hay conciliación**: si la pasarela cobra y nunca avisa (webhook perdido sin reintentos), el pago queda `PROCESSING`. Una pasarela real ofrece consultar el cobro; falta un proceso que lo haga periódicamente.
+- Una **DLQ** no tiene todavía quien la reprocese ni alarma: hoy se mira en el panel de RabbitMQ.
+- La pasarela simulada guarda su idempotencia en memoria (se pierde al reiniciar); una real la guarda ella.
+- El código de mensajería está **copiado** en reservations y payments (y los tests también): es candidato a paquete compartido, igual que seguridad y observabilidad.
+- El orden de los eventos no está garantizado (por los reintentos): los consumidores están escritos para tolerarlo.
+- `notifications-service` (avisar al cliente por mail/push al confirmarse) queda para después: los eventos ya están publicados.
+- Sin Docker en mi entorno de desarrollo, no pude probar `docker compose up` ni las imágenes; sí probé todo con RabbitMQ 3.12 y PostgreSQL 16 reales y los servicios corriendo como procesos.
+
+## Trazabilidad de logs
+
+Una sola acción del usuario atraviesa varios servicios (BFF → reservations → restaurants). Cuando algo falla hay que poder responder: *¿qué le pasó a ESA request en cada servicio?*
+
+```
+ navegador ──x-correlation-id──► web-bff ──mismo id──► reservations-service ──mismo id──► restaurants-service
+                                    │                          │                                │
+                              logs JSON                    logs JSON                        logs JSON
+                                    └────────────► Alloy ──► Loki ──► Grafana ◄───────────────┘
+```
+
+**Cómo funciona**
+1. El BFF recibe (o genera) un `x-correlation-id` y lo devuelve en la respuesta. Lo reenvía en **cada** llamada a otro servicio, y estos hacen lo mismo con los suyos.
+2. Dentro de cada servicio el id se guarda en un `AsyncLocalStorage` (una "variable global por request"), así que **cualquier log lo incluye solo**, sin pasarlo por parámetro y sin mezclar requests simultáneas.
+3. Cada servicio escribe **una línea JSON por evento**: `{"timestamp","level","service","context","message","correlationId","userId", ...}`.
+4. Cada request deja una línea `request completed` (método, ruta, status, duración) y cada llamada a otro servicio una línea `upstream call` (a quién, status, cuánto tardó). Así se ve **dónde se fue el tiempo**.
+5. **Alloy** lee los logs (de los contenedores o de `./logs`), saca `service` y `level` como etiquetas y los manda a **Loki**. **Grafana** los consulta.
+
+**Cómo verlo**
+
+```bash
+npm run obs:up                 # Loki, Alloy y Grafana
+npm run up                     # los servicios en Docker; sus logs se leen solos
+# ...o, si corrés los servicios con `npm run dev:*`, agregá LOG_DIR=../../logs a tu .env
+# y reiniciá: cada servicio escribe además ./logs/<servicio>.log, que Alloy también lee.
+```
+
+Abrí http://localhost:3030 → carpeta **Reservas** → **Trazabilidad**. Hacé una request desde el Swagger del BFF, copiá el header `x-correlation-id` de la respuesta y pegalo en la variable **correlationId** de arriba: aparecen, en orden, los logs de todos los servicios que tocó esa request. El dashboard también muestra requests por minuto, errores 5xx, latencia p95 y las llamadas más lentas entre servicios.
+
+Sin dashboard, en *Explore* de Grafana (consultas LogQL):
+
+```logql
+{app="reservas"} | json | correlationId="<el id>"                         # el recorrido de una request
+{app="reservas", level="error"}                                           # errores
+{service="web-bff"} | json | message="upstream call" | durationMs > 300   # llamadas lentas a otros servicios
+{app="reservas"} | json | userId="<id de usuario>"                        # todo lo de un usuario
+```
+
+Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más detalle: `LOG_LEVEL=debug`.
+
+### Decisiones de diseño
+
+- **JSON, no texto**: Loki filtra por campo (`| json | status >= 500`) sin parsear texto con regex.
+- **Etiquetas de Loki: solo `service`, `level` y `app`.** El `correlationId` NO es una etiqueta: tiene un valor distinto por request y Loki se vuelve lento con muchas combinaciones. Se busca en el contenido de la línea.
+- **Lo que nunca se loguea**: query string, body ni headers de las requests. Además, el logger reemplaza por `[REDACTED]` cualquier campo que se llame `password`, `token`, `authorization`, `secret`, `cookie` o `apiKey`, aunque alguien lo agregue por error. Hay tests que lo verifican.
+- **El id del cliente se acepta solo si es razonable** (8–100 caracteres alfanuméricos, `.`, `_` o `-`): evita que alguien inyecte basura o líneas falsas en los logs.
+- **Los logs de `/health` van en nivel debug** para no llenar todo de ruido.
+- **Retención de 7 días** en Loki, así el disco no crece sin límite.
+- **El código de observabilidad está copiado en los 4 servicios** (`src/observability/`), igual que los guards y el filtro de errores. Ya son cuatro copias idénticas: es el momento de moverlo a un paquete compartido del monorepo.
+
+### Limitaciones conocidas
+
+- Son **logs correlacionados**, no *tracing distribuido* (OpenTelemetry/Tempo): no hay una vista de árbol con spans. Con los tiempos de `upstream call` se reconstruye casi lo mismo, pero a mano. OpenTelemetry sería el siguiente paso natural.
+- No hay métricas (Prometheus) ni alertas.
+- **Grafana está abierto sin login** (`GF_AUTH_ANONYMOUS_*`) para comodidad en desarrollo: no usar así fuera de tu máquina.
+- Alloy necesita acceso al socket de Docker (solo lectura) para descubrir contenedores.
+- La correlación con **mensajes asíncronos** (RabbitMQ) se resolvió en la Fase 6: el `correlationId` viaja dentro de cada evento (y en el header `x-correlation-id` del mensaje) y los consumidores lo restauran, así una saga completa se sigue con un solo id en Grafana.
+- Sin Docker en mi entorno no pude probar la parte de contenedores (descubrimiento por socket, Grafana cargando el dashboard); sí probé Loki y Alloy reales leyendo archivos y todas las consultas del dashboard.
+
 ## Hoja de ruta
 
 - [x] **Fase 1**: monorepo, `docker-compose`, `auth-service` con Swagger y tests
 - [x] **Fase 2**: `restaurants-service` (MongoDB, carta)
 - [x] **Fase 3**: `reservations-service` (disponibilidad, estados, concurrencia)
 - [x] **Fase 4**: `web-bff` con validación de JWT y agregación de datos
-- [ ] **Fase 5**: trazabilidad (`x-correlation-id`, logs JSON, Loki + Grafana)
-- [ ] **Fase 6**: RabbitMQ, `payments-service` y saga de seña (idempotencia, compensaciones, DLQ)
+- [x] **Fase 5**: trazabilidad (`x-correlation-id`, logs JSON, Loki + Grafana)
+- [x] **Fase 6**: RabbitMQ, `payments-service` y saga de seña (idempotencia, compensaciones, DLQ)
 - [ ] **Fase 7**: frontend React (React Query, Context, Redux) con tests
 - [ ] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después
 - [ ] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
@@ -236,7 +403,12 @@ reservas-platform/
 ├── package.json            # npm workspaces
 ├── docker-compose.yml
 ├── .env.example
+├── e2e/                    # prueba de punta a punta de la saga
+├── observability/          # Loki, Alloy, Grafana
 └── services/
     ├── auth-service/
-    └── restaurants-service/
+    ├── restaurants-service/
+    ├── reservations-service/
+    ├── payments-service/
+    └── web-bff/
 ```

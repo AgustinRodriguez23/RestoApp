@@ -7,7 +7,7 @@ export class RegisterDto {
   @IsEmail()
   email: string;
 
-  @ApiProperty({ example: 'Marta García', minLength: 2, maxLength: 80 })
+  @ApiProperty({ example: 'Ana García', minLength: 2, maxLength: 80 })
   @IsString()
   @MinLength(2)
   @MaxLength(80)

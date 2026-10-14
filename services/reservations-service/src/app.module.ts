@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { typeOrmOptions } from './database.config';
 import { HealthController } from './health/health.controller';
+import { MessagingModule } from './messaging/messaging.module';
 import { ReservationsModule } from './reservations/reservations.module';
 
 @Module({
@@ -17,6 +18,7 @@ import { ReservationsModule } from './reservations/reservations.module';
       inject: [ConfigService],
       useFactory: typeOrmOptions,
     }),
+    MessagingModule,
     ReservationsModule,
   ],
   controllers: [HealthController],

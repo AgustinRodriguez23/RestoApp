@@ -18,7 +18,8 @@ export const NO_OVERLAP_CONSTRAINT = 'reservations_no_overlap';
  *   Y se solapen los rangos de tiempo". Necesita la extensión btree_gist para comparar con "=".
  * - tstzrange(starts_at, ends_at) es [inicio, fin): una reserva que termina a las 21:30 y otra
  *   que empieza a las 21:30 NO se solapan.
- * - WHERE status = 'CONFIRMED': las canceladas, completadas y ausentes no bloquean la mesa.
+ * - WHERE status IN ('CONFIRMED','PENDING_PAYMENT'): una reserva esperando la seña ya retiene la mesa; las
+ *   canceladas, vencidas, completadas y ausentes no la bloquean.
  *
  * TypeORM no sabe expresar esto con decoradores, por eso se aplica al iniciar. En producción
  * iría en una migración.
@@ -37,22 +38,31 @@ export class ReservationsSchemaBootstrap implements OnModuleInit {
 
     await this.dataSource.query('CREATE EXTENSION IF NOT EXISTS btree_gist');
 
-    const existing = await this.dataSource.query(
-      'SELECT 1 FROM pg_constraint WHERE conname = $1 AND conrelid = $2::regclass',
+    const existing: Array<{ definition: string }> = await this.dataSource.query(
+      'SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = $1 AND conrelid = $2::regclass',
       [NO_OVERLAP_CONSTRAINT, table],
     );
-    if (existing.length > 0) return;
+    // Ya está con la definición actual (bloquea también PENDING_PAYMENT): nada que hacer
+    if (existing.length > 0 && existing[0].definition.includes('PENDING_PAYMENT')) return;
 
     try {
-      await this.dataSource.query(`
-        ALTER TABLE ${table}
-        ADD CONSTRAINT ${NO_OVERLAP_CONSTRAINT}
-        EXCLUDE USING gist (
-          restaurant_id WITH =,
-          table_number WITH =,
-          tstzrange(starts_at, ends_at) WITH &&
-        ) WHERE (status = 'CONFIRMED')
-      `);
+      await this.dataSource.transaction(async (manager) => {
+        // Versión anterior (solo CONFIRMED, de antes de existir la seña): se reemplaza en la misma transacción
+        // para que nunca haya un instante sin restricción.
+        if (existing.length > 0) {
+          await manager.query(`ALTER TABLE ${table} DROP CONSTRAINT ${NO_OVERLAP_CONSTRAINT}`);
+          this.logger.warn(`Actualizando la restricción ${NO_OVERLAP_CONSTRAINT} para que incluya PENDING_PAYMENT`);
+        }
+        await manager.query(`
+          ALTER TABLE ${table}
+          ADD CONSTRAINT ${NO_OVERLAP_CONSTRAINT}
+          EXCLUDE USING gist (
+            restaurant_id WITH =,
+            table_number WITH =,
+            tstzrange(starts_at, ends_at) WITH &&
+          ) WHERE (status IN ('CONFIRMED', 'PENDING_PAYMENT'))
+        `);
+      });
       this.logger.log(`Restricción ${NO_OVERLAP_CONSTRAINT} creada`);
     } catch (error) {
       // 42710 = duplicate_object: otra instancia del servicio la creó justo antes que esta

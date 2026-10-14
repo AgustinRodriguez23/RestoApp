@@ -11,6 +11,7 @@ import { ReservationStatus } from './reservation-status.enum';
 @Entity('reservations')
 @Index(['customerId', 'startsAt'])
 @Index(['restaurantId', 'startsAt'])
+@Index(['status', 'expiresAt'])
 export class Reservation {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -40,6 +41,14 @@ export class Reservation {
 
   @Column({ type: 'varchar', length: 300, nullable: true })
   notes: string | null;
+
+  /** Seña a cobrar, en centavos (0 = sin seña). */
+  @Column({ name: 'deposit_cents', type: 'int', default: 0 })
+  depositCents: number;
+
+  /** Hasta cuándo se retiene la mesa esperando el pago (solo en PENDING_PAYMENT). */
+  @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
+  expiresAt: Date | null;
 
   @Column({ name: 'cancelled_at', type: 'timestamptz', nullable: true })
   cancelledAt: Date | null;

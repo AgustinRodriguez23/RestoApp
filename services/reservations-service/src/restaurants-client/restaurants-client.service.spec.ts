@@ -5,6 +5,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { runWithContext } from '../observability/request-context';
 import { RestaurantsClient } from './restaurants-client.service';
 
 const ID = '64b7f0c2a1b2c3d4e5f60718';
@@ -62,6 +63,16 @@ describe('RestaurantsClient', () => {
       tables: [{ number: 1, capacity: 4 }],
       openingHours: [{ dayOfWeek: 5, opens: '20:00', closes: '01:00' }],
     });
+  });
+
+  it('reenvía el correlationId de la request en curso, para cruzar los logs de ambos servicios', async () => {
+    fetchMock.mockImplementation(async () => json(200, validBody));
+
+    await runWithContext({ correlationId: 'traza-res-0001' }, () => client.getRestaurant(ID));
+    await client.getRestaurant(ID); // fuera de una request (ej: una tarea interna)
+
+    expect(fetchMock.mock.calls[0][1].headers['x-correlation-id']).toBe('traza-res-0001');
+    expect(fetchMock.mock.calls[1][1].headers['x-correlation-id']).toBeUndefined();
   });
 
   it('responde 404 sin reintentar si el restaurante no existe', async () => {

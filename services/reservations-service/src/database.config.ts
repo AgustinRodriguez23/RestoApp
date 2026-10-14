@@ -1,5 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
+import { OutboxMessage } from './messaging/entities/outbox-message.entity';
+import { ProcessedMessage } from './messaging/entities/processed-message.entity';
 import { Reservation } from './reservations/entities/reservation.entity';
 
 /**
@@ -20,9 +22,14 @@ export function typeOrmOptions(config: ConfigService): TypeOrmModuleOptions {
     // Schema propio del servicio (vacío = el "public" por defecto). Los tests de integración
     // lo usan para trabajar en un schema temporal sin tocar tus datos. Tiene que existir de antemano.
     schema: db('SCHEMA') || undefined,
-    entities: [Reservation],
+    entities: [Reservation, OutboxMessage, ProcessedMessage],
     // synchronize crea las tablas solas: cómodo para desarrollar,
     // pero en producción se reemplaza por migraciones.
-    synchronize: config.get<string>('NODE_ENV') !== 'production',
+    // DB_SYNCHRONIZE=true/false lo fuerza; sin definir, se activa salvo en producción.
+    // (docker-compose lo activa porque las imágenes corren con NODE_ENV=production y todavía no hay migraciones.)
+    synchronize:
+      config.get<string>('DB_SYNCHRONIZE') !== undefined
+        ? config.get<string>('DB_SYNCHRONIZE') === 'true'
+        : config.get<string>('NODE_ENV') !== 'production',
   };
 }

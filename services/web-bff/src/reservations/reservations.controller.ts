@@ -4,10 +4,12 @@ import { Ctx } from '../security/call-context.decorator';
 import { JwtAuthGuard } from '../security/jwt-auth.guard';
 import { CallContext, UpstreamClient } from '../upstream/upstream-client';
 import { CreateReservationDto, ListMyReservationsQueryDto } from './dto/reservations.dto';
-import { ReservationsEnricher } from './reservations-enricher.service';
+import { PaymentsEnricher, ReservationsEnricher } from './reservations-enricher.service';
 
 interface Reservation {
+  id: string;
   restaurantId: string;
+  depositCents?: number;
 }
 interface Page<T> {
   data: T[];
@@ -23,6 +25,7 @@ export class ReservationsController {
   constructor(
     private readonly upstream: UpstreamClient,
     private readonly enricher: ReservationsEnricher,
+    private readonly payments: PaymentsEnricher,
   ) {}
 
   @Post()
@@ -34,10 +37,10 @@ export class ReservationsController {
 
   // "mine" va antes que ":id" para que no se tome como un id
   @Get('mine')
-  @ApiOperation({ summary: 'Mis reservas, con el nombre del restaurante de cada una' })
+  @ApiOperation({ summary: 'Mis reservas, con el nombre del restaurante y el estado del pago de la seña' })
   async mine(@Query() query: ListMyReservationsQueryDto, @Ctx() ctx: CallContext) {
     const page = await this.upstream.call<Page<Reservation>>('reservations', { path: '/reservations/mine', query: { ...query } }, ctx);
-    return { ...page, data: await this.enricher.attachRestaurants(page.data, ctx) };
+    return { ...page, data: await this.enrichMany(page.data, ctx) };
   }
 
   @Get(':id')
@@ -55,7 +58,16 @@ export class ReservationsController {
   }
 
   private async enrichOne(reservation: Reservation, ctx: CallContext) {
-    const [enriched] = await this.enricher.attachRestaurants([reservation], ctx);
+    const [enriched] = await this.enrichMany([reservation], ctx);
     return enriched;
+  }
+
+  /** Nombre del restaurante + estado del pago, pedidos en paralelo (los dos son opcionales). */
+  private async enrichMany(reservations: Reservation[], ctx: CallContext) {
+    const [withRestaurant, withPayment] = await Promise.all([
+      this.enricher.attachRestaurants(reservations, ctx),
+      this.payments.attachPayments(reservations, ctx),
+    ]);
+    return withRestaurant.map((r, i) => ({ ...r, payment: withPayment[i].payment }));
   }
 }

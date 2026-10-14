@@ -27,6 +27,15 @@ export class ReservationDto {
   @ApiProperty({ enum: ReservationStatus })
   status: ReservationStatus;
 
+  @ApiProperty({ example: 400000, description: 'Seña en centavos (0 = sin seña)' })
+  depositCents: number;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'En PENDING_PAYMENT: hasta cuándo se retiene la mesa esperando el pago',
+  })
+  expiresAt: string | null;
+
   @ApiPropertyOptional({ nullable: true })
   notes: string | null;
 

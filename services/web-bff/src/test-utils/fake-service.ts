@@ -14,6 +14,8 @@ export interface FakeReply {
   /** Texto crudo en vez de JSON (para simular respuestas rotas). */
   raw?: string;
   delayMs?: number;
+  /** Headers de respuesta extra. */
+  headers?: Record<string, string>;
 }
 
 export type FakeHandler = (call: RecordedCall) => FakeReply | Promise<FakeReply>;
@@ -43,6 +45,7 @@ export class FakeService {
       if (res.destroyed) return;
       res.statusCode = reply.status ?? 200;
       res.setHeader('Content-Type', 'application/json');
+      for (const [name, value] of Object.entries(reply.headers ?? {})) res.setHeader(name, value);
       res.end(reply.raw ?? (reply.body === undefined ? '' : JSON.stringify(reply.body)));
     });
     await new Promise<void>((resolve) => fake.server.listen(0, '127.0.0.1', resolve));

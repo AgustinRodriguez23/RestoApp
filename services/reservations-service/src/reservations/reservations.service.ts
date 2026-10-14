@@ -8,18 +8,23 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   And,
+  DataSource,
+  EntityManager,
   FindOptionsWhere,
   LessThan,
   MoreThanOrEqual,
   QueryFailedError,
   Repository,
 } from 'typeorm';
+import { OutboxService } from '../messaging/outbox.service';
 import { RestaurantsClient } from '../restaurants-client/restaurants-client.service';
 import { fitsInShift } from '../scheduling/schedule';
 import { localToUtc, parseDateOnly, utcToLocal } from '../scheduling/time-zone';
 import { JwtPayload } from '../security/jwt-payload';
 import { Role } from '../security/role.enum';
 import { BookingPolicy } from './booking-policy';
+import { DepositPolicy } from './deposit-policy';
+import { ReservationEvents } from './reservation-events';
 import { ListReservationsQueryDto, ListRestaurantReservationsQueryDto } from './dto/list-reservations-query.dto';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { Reservation } from './entities/reservation.entity';
@@ -55,6 +60,9 @@ export class ReservationsService {
     @InjectRepository(Reservation) private readonly repo: Repository<Reservation>,
     private readonly restaurants: RestaurantsClient,
     private readonly policy: BookingPolicy,
+    private readonly deposit: DepositPolicy,
+    private readonly dataSource: DataSource,
+    private readonly outbox: OutboxService,
   ) {}
 
   /**
@@ -84,21 +92,49 @@ export class ReservationsService {
 
     const endsAt = new Date(startsAt.getTime() + this.policy.durationMinutes * MS_PER_MINUTE);
 
+    // Con seña, la reserva queda PENDING_PAYMENT: retiene la mesa unos minutos mientras se paga.
+    // Sin seña nace CONFIRMED, como siempre.
+    const depositCents = this.deposit.amountFor(dto.partySize);
+    const needsPayment = depositCents > 0;
+    const expiresAt = needsPayment ? new Date(Date.now() + this.deposit.paymentWindowMinutes * MS_PER_MINUTE) : null;
+
     for (const table of candidates) {
       try {
-        const reservation = await this.repo.save(
-          this.repo.create({
-            restaurantId: dto.restaurantId,
-            tableNumber: table.number,
-            customerId: user.sub,
-            partySize: dto.partySize,
-            startsAt,
-            endsAt,
-            status: ReservationStatus.CONFIRMED,
-            notes: dto.notes ?? null,
-          }),
+        // La reserva y su evento se guardan en UNA transacción (outbox): o existen los dos o ninguno.
+        // Cada mesa se prueba en su propia transacción porque una violación de la restricción aborta la anterior.
+        const reservation = await this.dataSource.transaction(async (manager) => {
+          const repo = manager.getRepository(Reservation);
+          const saved = await repo.save(
+            repo.create({
+              restaurantId: dto.restaurantId,
+              tableNumber: table.number,
+              customerId: user.sub,
+              partySize: dto.partySize,
+              startsAt,
+              endsAt,
+              status: needsPayment ? ReservationStatus.PENDING_PAYMENT : ReservationStatus.CONFIRMED,
+              depositCents,
+              expiresAt,
+              notes: dto.notes ?? null,
+            }),
+          );
+          if (needsPayment) {
+            await this.outbox.enqueue(manager, ReservationEvents.CREATED, {
+              reservationId: saved.id,
+              customerId: saved.customerId,
+              restaurantId: saved.restaurantId,
+              amountCents: depositCents,
+              currency: this.deposit.currency,
+              expiresAt: expiresAt?.toISOString(),
+            });
+          } else {
+            await this.outbox.enqueue(manager, ReservationEvents.CONFIRMED, this.confirmedData(saved));
+          }
+          return saved;
+        });
+        this.logger.log(
+          `Reserva ${reservation.id} creada (${reservation.status}, mesa ${table.number}, restaurante ${dto.restaurantId})`,
         );
-        this.logger.log(`Reserva ${reservation.id} creada (mesa ${table.number}, restaurante ${dto.restaurantId})`);
         return reservation;
       } catch (error) {
         if (isExclusionViolation(error)) continue; // mesa ocupada en ese horario: probar la siguiente
@@ -145,7 +181,11 @@ export class ReservationsService {
     return this.paginate(where, query, 'ASC');
   }
 
-  /** La puede cancelar quien reservó o el dueño del restaurante, y solo antes de que empiece. */
+  /**
+   * La puede cancelar quien reservó o el dueño del restaurante, y solo antes de que empiece.
+   * Si ya había una seña paga, el evento lleva `refundable`: lo decide ESTE servicio (es quien conoce la
+   * política de cancelación) y payments-service solo ejecuta la devolución.
+   */
   async cancel(id: string, user: JwtPayload): Promise<Reservation> {
     const { reservation } = await this.loadWithAccess(id, user);
 
@@ -154,10 +194,21 @@ export class ReservationsService {
       throw new BadRequestException('No se puede cancelar una reserva que ya comenzó');
     }
 
-    return this.applyTransition(reservation, ReservationStatus.CANCELLED, {
-      cancelledAt: new Date(),
-      cancelledBy: user.sub,
-    });
+    const byOwner = user.sub !== reservation.customerId;
+    return this.applyTransition(
+      reservation,
+      ReservationStatus.CANCELLED,
+      { cancelledAt: new Date(), cancelledBy: user.sub, expiresAt: null },
+      (manager) =>
+        this.outbox.enqueue(manager, ReservationEvents.CANCELLED, {
+          reservationId: reservation.id,
+          customerId: reservation.customerId,
+          restaurantId: reservation.restaurantId,
+          reason: byOwner ? 'CANCELLED_BY_OWNER' : 'CANCELLED_BY_CUSTOMER',
+          refundable: this.deposit.isRefundable(reservation.startsAt, byOwner),
+          depositCents: reservation.depositCents,
+        }),
+    );
   }
 
   /** Solo el dueño del restaurante marca si el cliente fue (COMPLETED) o no se presentó (NO_SHOW). */
@@ -235,17 +286,33 @@ export class ReservationsService {
    * Cambia el estado solo si sigue siendo el que leímos (UPDATE ... WHERE id AND status = <el leído>).
    * Si entre la lectura y la escritura alguien más cambió la reserva (ej: la cancelan y la marcan
    * como completada a la vez), no se pisa su cambio: el segundo recibe un 409.
+   * El evento (si hay) se deja en el outbox dentro de la misma transacción que el cambio.
    */
   private async applyTransition(
     reservation: Reservation,
     to: ReservationStatus,
     extra: Partial<Reservation> = {},
+    event?: (manager: EntityManager) => Promise<unknown>,
   ): Promise<Reservation> {
-    const result = await this.repo.update({ id: reservation.id, status: reservation.status }, { status: to, ...extra });
-    if (!result.affected) {
-      throw new ConflictException('La reserva cambió de estado mientras la procesábamos. Consultala de nuevo.');
-    }
+    await this.dataSource.transaction(async (manager) => {
+      const result = await manager
+        .getRepository(Reservation)
+        .update({ id: reservation.id, status: reservation.status }, { status: to, ...extra });
+      if (!result.affected) {
+        throw new ConflictException('La reserva cambió de estado mientras la procesábamos. Consultala de nuevo.');
+      }
+      await event?.(manager);
+    });
     return this.findOrFail(reservation.id);
+  }
+
+  private confirmedData(reservation: Reservation) {
+    return {
+      reservationId: reservation.id,
+      customerId: reservation.customerId,
+      restaurantId: reservation.restaurantId,
+      startsAt: reservation.startsAt.toISOString(),
+    };
   }
 
   private async paginate(

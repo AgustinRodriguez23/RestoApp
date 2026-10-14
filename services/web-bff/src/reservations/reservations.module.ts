@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
 import { SecurityModule } from '../security/security.module';
+import { ReservationPaymentsController } from './reservation-payments.controller';
 import { ReservationsController } from './reservations.controller';
-import { ReservationsEnricher } from './reservations-enricher.service';
+import { PaymentsEnricher, ReservationsEnricher } from './reservations-enricher.service';
 
 @Module({
   imports: [SecurityModule],
-  controllers: [ReservationsController],
-  providers: [ReservationsEnricher],
-  exports: [ReservationsEnricher],
+  controllers: [ReservationsController, ReservationPaymentsController],
+  providers: [ReservationsEnricher, PaymentsEnricher],
+  exports: [ReservationsEnricher, PaymentsEnricher],
 })
 export class ReservationsModule {}

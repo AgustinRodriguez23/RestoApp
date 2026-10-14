@@ -137,13 +137,17 @@ describe('AvailabilityService', () => {
     ]);
   });
 
-  it('busca solo reservas CONFIRMADAS del restaurante, en una única consulta', async () => {
+  it('busca solo reservas que ocupan mesa (confirmadas o esperando la seña) del restaurante, en una única consulta', async () => {
     await service.getAvailability(query());
 
     expect(repo.find).toHaveBeenCalledTimes(1);
     const { where } = repo.find.mock.calls[0][0];
     expect(where.restaurantId).toBe(RID);
-    expect(where.status).toBe(ReservationStatus.CONFIRMED);
+    expect((where.status as FindOperator<ReservationStatus>).type).toBe('in');
+    expect((where.status as FindOperator<ReservationStatus>).value).toEqual([
+      ReservationStatus.CONFIRMED,
+      ReservationStatus.PENDING_PAYMENT,
+    ]);
     expect((where.startsAt as FindOperator<Date>).type).toBe('lessThan');
     expect((where.endsAt as FindOperator<Date>).type).toBe('moreThan');
   });

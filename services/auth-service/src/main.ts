@@ -1,20 +1,16 @@
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
-import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { createLogger } from './observability/json-logger';
+import { configureApp } from './app.setup';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // bufferLogs: los logs del arranque esperan a que esté listo el logger JSON
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.useLogger(createLogger('auth-service'));
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true, // descarta propiedades que no están en el DTO
-      forbidNonWhitelisted: true, // y rechaza la request si vienen de más
-      transform: true,
-    }),
-  );
-  app.useGlobalFilters(new AllExceptionsFilter());
+  configureApp(app);
   app.enableShutdownHooks();
 
   const swaggerConfig = new DocumentBuilder()
