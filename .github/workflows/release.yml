@@ -48,7 +48,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }} # token temporal de la corrida: no hay que crear secretos
       - name: Etiquetas y metadatos de la imagen
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # ghcr.io/<usuario>/<repo>/<servicio> (el nombre se pasa a minúsculas solo)
           images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
