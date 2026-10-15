@@ -1,0 +1,203 @@
+name: CI
+
+# Corre en cada pull request y en cada push a una rama que no sea main.
+# En main lo llama release.yml (workflow_call): así las imágenes solo se publican si todo esto pasó.
+on:
+  pull_request:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 20 # el mismo que usan los Dockerfile
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Compila y corre los tests unitarios de cada paquete, en paralelo.
+  # `npm ci` instala EXACTAMENTE lo que dice package-lock.json (y falla si no coincide con package.json).
+  # ---------------------------------------------------------------------------
+  unit:
+    name: Unitarios · ${{ matrix.workspace }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false # que un servicio roto no oculte si los otros pasan
+      matrix:
+        workspace: [auth-service, restaurants-service, reservations-service, payments-service, web-bff, web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Compilar (incluye el chequeo de tipos)
+        run: npm run build -w ${{ matrix.workspace }}
+      - name: Tests unitarios
+        run: npm test -w ${{ matrix.workspace }}
+
+  # ---------------------------------------------------------------------------
+  # Tests de integración: contra PostgreSQL y RabbitMQ reales (no simulados).
+  # Los puertos y credenciales coinciden con los valores por defecto de los tests.
+  # ---------------------------------------------------------------------------
+  integration:
+    name: Integración · ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: reservations-service
+            db_port: 5434
+            db_user: reservations
+            db_password: reservations_password
+            db_name: reservations_db
+          - service: payments-service
+            db_port: 5435
+            db_user: payments
+            db_password: payments_password
+            db_name: payments_db
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ${{ matrix.db_user }}
+          POSTGRES_PASSWORD: ${{ matrix.db_password }}
+          POSTGRES_DB: ${{ matrix.db_name }}
+        ports:
+          - ${{ matrix.db_port }}:5432
+        options: >-
+          --health-cmd "pg_isready -U ${{ matrix.db_user }}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        # El usuario "guest" de RabbitMQ solo acepta conexiones locales al contenedor: se crea uno propio
+        image: rabbitmq:3.13-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+    env:
+      TEST_DB_HOST: localhost
+      TEST_DB_PORT: ${{ matrix.db_port }}
+      TEST_DB_USER: ${{ matrix.db_user }}
+      TEST_DB_PASSWORD: ${{ matrix.db_password }}
+      TEST_DB_NAME: ${{ matrix.db_name }}
+      RABBITMQ_TEST_URL: amqp://ci:ci@localhost:5672
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Tests de integración
+        run: npm run test:integration -w ${{ matrix.service }}
+
+  # ---------------------------------------------------------------------------
+  # Que cada imagen Docker se pueda construir (lo que se publica en release.yml).
+  # Sin push: acá solo se verifica.
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: Imagen · ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: auth-service, context: services/auth-service }
+          - { name: restaurants-service, context: services/restaurants-service }
+          - { name: reservations-service, context: services/reservations-service }
+          - { name: payments-service, context: services/payments-service }
+          - { name: web-bff, context: services/web-bff }
+          - { name: web, context: apps/web }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: false
+          # Caché en el almacenamiento de GitHub Actions: las dependencias no se reinstalan si no cambiaron
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  # ---------------------------------------------------------------------------
+  # Prueba de punta a punta: levanta TODO con docker compose (bases, RabbitMQ, los 5 servicios y el front)
+  # y corre la saga de la seña a través del BFF. Es lo único que prueba la red entre contenedores.
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: Punta a punta (docker compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Variables de entorno (secretos descartables, solo para esta corrida)
+        run: |
+          cp .env.example .env
+          sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -hex 32)|" .env
+          sed -i "s|^GATEWAY_WEBHOOK_SECRET=.*|GATEWAY_WEBHOOK_SECRET=$(openssl rand -hex 32)|" .env
+          # Que el webhook de la pasarela simulada llegue rápido
+          sed -i "s|^SIMULATED_WEBHOOK_DELAY_MS=.*|SIMULATED_WEBHOOK_DELAY_MS=1000|" .env
+      - name: Validar docker-compose.yml
+        run: docker compose config -q
+      - name: Construir y levantar el sistema
+        run: docker compose up -d --build auth-service restaurants-service reservations-service payments-service web-bff web
+      - name: Esperar a que el BFF vea a todos los servicios
+        run: |
+          for i in $(seq 1 60); do
+            body=$(curl -s http://localhost:3000/health || true)
+            if echo "$body" | grep -q '"auth":"up"' && echo "$body" | grep -q '"restaurants":"up"' \
+               && echo "$body" | grep -q '"reservations":"up"' && echo "$body" | grep -q '"payments":"up"'; then
+              echo "Todo arriba: $body"; exit 0
+            fi
+            echo "Esperando ($i/60)... $body"; sleep 5
+          done
+          echo "El sistema no levantó a tiempo"; exit 1
+      - name: El front responde (nginx + proxy /api al BFF)
+        run: |
+          curl -sf http://localhost:5173/ | grep -q '<div id="root">'
+          curl -sf http://localhost:5173/api/health | grep -q '"service":"web-bff"'
+      - name: Saga de la seña
+        run: node e2e/saga.e2e.mjs
+      - name: Logs de los contenedores (solo si algo falló)
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+      - name: Apagar
+        if: always()
+        run: docker compose down -v
+
+  # ---------------------------------------------------------------------------
+  # Vulnerabilidades conocidas en dependencias de producción. Avisa, pero no bloquea:
+  # un aviso nuevo en una librería no debería frenar un cambio que no la toca.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: Auditoría de dependencias
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm audit --omit=dev --audit-level=high

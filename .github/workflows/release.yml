@@ -1,0 +1,67 @@
+name: Release
+
+# Publica las imágenes Docker en GitHub Container Registry (ghcr.io).
+#  - push a main      → etiquetas "latest" y "sha-<commit>"
+#  - tag vX.Y.Z       → además "X.Y.Z" y "X.Y" (versionado semántico)
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # una publicación empezada no se corta a la mitad
+
+permissions:
+  contents: read
+
+jobs:
+  # Nada se publica si el CI no pasó
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publicar · ${{ matrix.name }}
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # solo este job puede escribir en el registro
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: auth-service, context: services/auth-service }
+          - { name: restaurants-service, context: services/restaurants-service }
+          - { name: reservations-service, context: services/reservations-service }
+          - { name: payments-service, context: services/payments-service }
+          - { name: web-bff, context: services/web-bff }
+          - { name: web, context: apps/web }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # token temporal de la corrida: no hay que crear secretos
+      - name: Etiquetas y metadatos de la imagen
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # ghcr.io/<usuario>/<repo>/<servicio> (el nombre se pasa a minúsculas solo)
+          images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }} # enlaza la imagen con el repo y el commit
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
