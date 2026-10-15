@@ -1,0 +1,115 @@
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, ApiError } from '../lib/api';
+import type { CreateReservationInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
+
+/**
+ * Todo el estado que vive en el servidor pasa por React Query: caché, reintentos, "cargando" y
+ * "error" salen de acá y las pantallas no los reimplementan. Las claves están en un solo lugar para
+ * poder invalidar con precisión (por ejemplo, al cancelar se refrescan las reservas pero no los restaurantes).
+ */
+export const keys = {
+  restaurants: (params: object) => ['restaurants', params] as const,
+  overview: (id: string, date: string, partySize: number) => ['overview', id, date, partySize] as const,
+  reservations: (params: object) => ['reservations', 'list', params] as const,
+  reservation: (id: string) => ['reservations', 'detail', id] as const,
+};
+
+export function useRestaurants(params: { search: string; cuisine: string; page: number }) {
+  return useQuery({
+    queryKey: keys.restaurants(params),
+    queryFn: ({ signal }) =>
+      api.get<Page<Restaurant>>('/restaurants', { search: params.search, cuisine: params.cuisine, page: params.page, limit: 9 }, signal),
+    placeholderData: keepPreviousData, // al cambiar de página se ve la anterior hasta que llega la nueva
+  });
+}
+
+export function useRestaurantOverview(id: string, date: string, partySize: number) {
+  return useQuery({
+    queryKey: keys.overview(id, date, partySize),
+    queryFn: ({ signal }) => api.get<RestaurantOverview>(`/restaurants/${id}/overview`, { date, partySize }, signal),
+    // Los horarios libres cambian cuando otros reservan: si el usuario vuelve a la pestaña, se refrescan
+    enabled: id !== '' && date !== '',
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
+export function useMyReservations(status: ReservationStatus | '') {
+  return useQuery({
+    queryKey: keys.reservations({ status }),
+    queryFn: ({ signal }) => api.get<Page<Reservation>>('/reservations/mine', { status, limit: 50 }, signal),
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Estados en los que el resultado todavía puede cambiar solo (por un evento o un webhook): se consulta cada tanto. */
+export function isSettling(reservation: Reservation | undefined): boolean {
+  if (!reservation || reservation.status !== 'PENDING_PAYMENT') return false;
+  // PROCESSING: la pasarela avisará por webhook. SUCCEEDED/FAILED con la reserva todavía pendiente:
+  // el evento que la confirma (o la cancela) está en camino.
+  const status = reservation.payment?.status;
+  return status === 'PROCESSING' || status === 'SUCCEEDED' || status === 'FAILED';
+}
+
+export function useReservation(id: string) {
+  return useQuery({
+    queryKey: keys.reservation(id),
+    queryFn: ({ signal }) => api.get<Reservation>(`/reservations/${id}`, undefined, signal),
+    refetchInterval: (query) => (isSettling(query.state.data) ? 2000 : false),
+  });
+}
+
+export function useCreateReservation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateReservationInput) => api.post<Reservation>('/reservations', input).then((r) => r.data),
+    onSuccess: (reservation) => {
+      queryClient.setQueryData(keys.reservation(reservation.id), reservation);
+      // La mesa ahora está retenida: los horarios libres y mis reservas cambiaron
+      void queryClient.invalidateQueries({ queryKey: ['overview'] });
+      void queryClient.invalidateQueries({ queryKey: ['reservations', 'list'] });
+    },
+  });
+}
+
+export function useCancelReservation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<Reservation>(`/reservations/${id}/cancel`).then((r) => r.data),
+    onSuccess: (reservation) => {
+      queryClient.setQueryData(keys.reservation(reservation.id), reservation);
+      void queryClient.invalidateQueries({ queryKey: ['reservations', 'list'] });
+      void queryClient.invalidateQueries({ queryKey: ['overview'] });
+      // La devolución de la seña llega por evento unos instantes después: se vuelve a mirar
+      setTimeout(() => void queryClient.invalidateQueries({ queryKey: ['reservations'] }), 2500);
+    },
+  });
+}
+
+export interface PayInput {
+  reservationId: string;
+  token: string;
+  idempotencyKey: string;
+}
+
+export interface PayResult {
+  payment: Payment;
+  /** true = la pasarela todavía procesa (HTTP 202): el resultado llega después */
+  processing: boolean;
+  replayed: boolean;
+}
+
+export function usePayReservation() {
+  const queryClient = useQueryClient();
+  return useMutation<PayResult, ApiError, PayInput>({
+    mutationFn: async ({ reservationId, token, idempotencyKey }) => {
+      const response = await api.post<Payment>(`/reservations/${reservationId}/pay`, { token }, { 'Idempotency-Key': idempotencyKey });
+      return { payment: response.data, processing: response.status === 202, replayed: response.replayed };
+    },
+    // Éxito o rechazo, la reserva cambió (se confirma o se cancela por evento, unos instantes después)
+    onSettled: (_result, _error, input) => {
+      void queryClient.invalidateQueries({ queryKey: keys.reservation(input.reservationId) });
+      void queryClient.invalidateQueries({ queryKey: ['reservations', 'list'] });
+    },
+  });
+}

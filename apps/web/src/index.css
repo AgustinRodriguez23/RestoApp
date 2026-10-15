@@ -1,0 +1,130 @@
+@import '@fontsource-variable/bricolage-grotesque';
+@import '@fontsource-variable/instrument-sans';
+@import 'tailwindcss';
+
+/*
+ * Paleta: salón de bodegón de noche, no menú de papel.
+ *  mist  = pared de azulejo claro   ink   = verde botella casi negro
+ *  sifon = azul del sifón de soda   amber = señal de "falta pagar"
+ */
+@theme {
+  --font-display: 'Bricolage Grotesque Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;
+
+  --color-mist: #edf1ef;
+  --color-surface: #fafcfb;
+  --color-ink: #12261f;
+  --color-muted: #4a635b;
+  --color-line: #c6d4cf;
+  --color-sifon: #1b6f8a;
+  --color-sifon-dark: #0f4c61;
+  --color-sifon-soft: #d8ebf1;
+  --color-amber: #f4dfa6;
+  --color-amber-ink: #5e4200;
+  --color-ok: #1e6b45;
+  --color-ok-soft: #d3ecdd;
+  --color-danger: #a8321c;
+  --color-danger-soft: #f6d9d1;
+}
+
+@layer base {
+  html {
+    background: var(--color-mist);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    min-height: 100dvh;
+    background: var(--color-mist);
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+  }
+  :focus-visible {
+    outline: 3px solid var(--color-sifon);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/*
+ * La comanda: el ticket que el mozo deja en la mesa. Es el único adorno de la app y se usa
+ * para lo que es una reserva (en el pago y en "Mis reservas"). Las muescas son círculos del
+ * color del fondo sobre la línea perforada.
+ */
+@layer components {
+  .comanda {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .comanda-stub {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-width: 9.5rem;
+    padding: 1.25rem 1.25rem 1.25rem 1.5rem;
+    border-left: 2px dashed var(--color-line);
+  }
+  .comanda-stub::before,
+  .comanda-stub::after {
+    content: '';
+    position: absolute;
+    left: -11px;
+    width: 20px;
+    height: 20px;
+    border-radius: 999px;
+    background: var(--color-mist);
+    border: 1px solid var(--color-line);
+  }
+  .comanda-stub::before {
+    top: -11px;
+  }
+  .comanda-stub::after {
+    bottom: -11px;
+  }
+  @media (max-width: 40rem) {
+    .comanda {
+      grid-template-columns: 1fr;
+    }
+    .comanda-stub {
+      border-left: 0;
+      border-top: 2px dashed var(--color-line);
+      flex-direction: row;
+      align-items: center;
+      padding: 1rem 1.25rem;
+    }
+    .comanda-stub::before,
+    .comanda-stub::after {
+      left: auto;
+      top: -11px;
+      bottom: auto;
+    }
+    .comanda-stub::before {
+      left: -11px;
+    }
+    .comanda-stub::after {
+      right: -11px;
+    }
+  }
+}

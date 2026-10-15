@@ -2,7 +2,7 @@
 
 Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida como **arquitectura de microservicios**. Es un proyecto de práctica pensado para demostrar patrones reales: BFF, comunicación asíncrona con eventos, trazabilidad de logs, tests, Docker y CI/CD.
 
-> Estado: **Fase 6 completa** (RabbitMQ, `payments-service` y la saga de la seña con idempotencia, compensaciones y DLQ). Las demás fases están en la hoja de ruta.
+> Estado: **Fase 7 completa** (frontend React con el flujo principal: ingresar, elegir restaurante, reservar, pagar la seña y ver mis reservas). Las demás fases están en la hoja de ruta.
 
 ## Arquitectura objetivo
 
@@ -31,6 +31,7 @@ Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida
 | `payments-service` | Seña y cobro, idempotencia, webhooks, reembolsos | PostgreSQL | 3004 | ✅ Fase 6 |
 | `notifications-service` | Consume eventos y notifica | MongoDB | — | Pendiente |
 | `web-bff` | Entrada única del frontend, agrega datos | — | 3000 | ✅ Fase 4 |
+| `web` (`apps/web`) | Frontend React: buscar, reservar, pagar la seña | — | 5173 | ✅ Fase 7 |
 
 ## Stack
 
@@ -57,6 +58,7 @@ npm run dev:restaurants     # en otra terminal
 npm run dev:reservations    # en otra terminal
 npm run dev:payments        # en otra terminal
 npm run dev:bff             # en otra terminal (el frontend solo habla con este)
+npm run dev:web             # el frontend: http://localhost:5173
 npm run obs:up              # Loki + Alloy + Grafana (ver «Trazabilidad de logs»)
 ```
 
@@ -68,6 +70,7 @@ npm run obs:up              # Loki + Alloy + Grafana (ver «Trazabilidad de logs
 | payments | http://localhost:3004 | http://localhost:3004/docs | http://localhost:3004/health |
 | RabbitMQ (panel) | http://localhost:15672 (usuario `reservas`, clave `reservas_password`) | — | — |
 | **web-bff** | http://localhost:3000 | http://localhost:3000/docs | http://localhost:3000/health |
+| **web (frontend)** | http://localhost:5173 | — | — |
 
 ### Probar el flujo completo
 
@@ -325,6 +328,58 @@ Estados del pago: `PENDING → PROCESSING → SUCCEEDED → REFUNDED`, o `FAILED
 - `notifications-service` (avisar al cliente por mail/push al confirmarse) queda para después: los eventos ya están publicados.
 - Sin Docker en mi entorno de desarrollo, no pude probar `docker compose up` ni las imágenes; sí probé todo con RabbitMQ 3.12 y PostgreSQL 16 reales y los servicios corriendo como procesos.
 
+## Fase 7: frontend (`apps/web`)
+
+React 19 + TypeScript + Vite + Tailwind CSS 4. Habla **solo con el BFF**, a través de `/api` (Vite en desarrollo y nginx en la imagen reenvían `/api/*` al BFF; así el navegador usa un único origen y no hace falta CORS).
+
+```bash
+npm run dev:web        # http://localhost:5173 (necesita el BFF y el resto andando)
+npm test -w web        # 40 tests (Vitest + Testing Library)
+npm run build -w web   # tsc + vite build
+```
+
+Con `npm run up` el frontend también se levanta en http://localhost:5173 (contenedor `web`, nginx).
+
+**Para ver algo hace falta un restaurante cargado.** Seguí los pasos 1 y 2 de «Probar el flujo completo» (dueño + restaurante con horarios y mesas, y algún plato en la carta) y después entrá al frontend como cliente.
+
+### Pantallas
+
+| Ruta | Qué hace |
+|---|---|
+| `/` | Busca restaurantes por nombre y cocina (la búsqueda y la página viven en la URL) |
+| `/restaurantes/:id` | Datos, **horarios libres** según personas y día, carta y botón para reservar |
+| `/ingresar` | Login y registro (vuelve a donde se quería ir) |
+| `/reservas/:id/pagar` | Paga la seña con los medios de prueba de la pasarela simulada; muestra el tiempo que queda de mesa retenida |
+| `/reservas` | Mis reservas con filtro por estado, pago de la seña y cancelación con confirmación |
+
+### Dónde vive cada tipo de estado (y por qué)
+
+| Herramienta | Qué guarda | Por qué ahí |
+|---|---|---|
+| **React Query** (`src/api/hooks.ts`) | Todo lo que viene del servidor: restaurantes, horarios libres, reservas, pagos | Caché, "cargando/error", reintentos y refresco al volver a la pestaña vienen resueltos. Las claves están en un solo lugar para invalidar con precisión (al cancelar se refrescan las reservas y los horarios libres, no los restaurantes) |
+| **Context** (`src/auth/AuthContext.tsx`) | La sesión (usuario y token) | Casi cualquier componente la lee y cambia muy poco (login/logout) |
+| **Redux Toolkit** (`src/store`) | El **borrador de la reserva** (personas, día, horario elegido, notas) y los avisos (toasts) | El borrador es estado del cliente que tiene que sobrevivir a la navegación: elegís un horario sin sesión, vas a ingresar, volvés y sigue elegido |
+| **Estado local** (`useState`) | Cosas de una sola pantalla: qué medio de pago está marcado, si se está confirmando una cancelación | No hace falta compartirlo |
+| **URL** (`useSearchParams`) | Búsqueda, filtros y página | Se puede compartir, recargar y volver con "atrás" |
+
+### Decisiones que vale la pena mirar
+
+- **El pago es el lugar donde un frontend ingenuo cobra dos veces.** La clave `Idempotency-Key` se genera por intento de pago y se **conserva** si el pedido falla por red o por la pasarela (reintentar es seguro: el servidor devuelve lo mismo); solo cambia si se cambia el medio de pago, porque el backend rechaza la misma clave con otro contenido. Los `POST` nunca se reintentan solos (`mutations.retry: false`). Hay tests para las dos reglas.
+- **La confirmación es asíncrona** (llega por evento de RabbitMQ), así que justo después de pagar la reserva puede seguir en `PENDING_PAYMENT` unos instantes. La pantalla de pago consulta cada 2 s mientras el resultado todavía puede cambiar (`PROCESSING`, o pago ya resuelto con reserva todavía sin actualizar) y no deja pagar de nuevo mientras tanto.
+- **Si alguien se llevó el horario antes que vos** (409), se deselecciona el horario, se muestra el motivo y se piden de nuevo los libres.
+- **Los errores se muestran, no se esconden**: el cliente de la API (`src/lib/api.ts`) convierte cualquier falla en un `ApiError` con un mensaje legible (los 5xx nunca muestran detalles técnicos) y el código de seguimiento (`x-correlation-id`) para buscar el pedido en Grafana. Un 401 con sesión cierra la sesión y limpia la caché (no se ve nada del usuario anterior).
+- **Fechas y montos**: los horarios se muestran en la zona del restaurante (no la del navegador) y el dinero viaja en centavos.
+- **Accesibilidad básica**: etiquetas en todos los campos, foco visible, regiones `aria-live` para los resultados, respeta `prefers-reduced-motion`, botones de al menos 44 px.
+- **Diseño**: la reserva se muestra como una *comanda* (el ticket del mozo, con su borde perforado); es el único adorno de la app.
+
+### Limitaciones conocidas
+
+- **Falta el panel del dueño del restaurante** (cargar restaurantes, carta, ver reservas del día): por ahora se hace desde el Swagger.
+- El **token se guarda en `localStorage`**: sobrevive al F5 pero un script malicioso (XSS) podría leerlo. Lo más seguro sería que el BFF lo entregue en una cookie `httpOnly`.
+- Los **tests** cubren la lógica y las pantallas con un servidor falso (`fetch` simulado); no hay todavía pruebas con un navegador real contra el stack (lo recorrí a mano con Playwright, pero ese script no está en el repo).
+- Sin Docker en mi entorno de desarrollo no pude probar la imagen `web` ni la configuración de nginx; sí probé el build de la imagen paso a paso (instalación aislada + `npm run build`) y el frontend contra los servicios reales con `npm run dev`.
+- Solo tema claro; sin traducciones (todo en español rioplatense).
+
 ## Trazabilidad de logs
 
 Una sola acción del usuario atraviesa varios servicios (BFF → reservations → restaurants). Cuando algo falla hay que poder responder: *¿qué le pasó a ESA request en cada servicio?*
@@ -392,7 +447,7 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Fase 4**: `web-bff` con validación de JWT y agregación de datos
 - [x] **Fase 5**: trazabilidad (`x-correlation-id`, logs JSON, Loki + Grafana)
 - [x] **Fase 6**: RabbitMQ, `payments-service` y saga de seña (idempotencia, compensaciones, DLQ)
-- [ ] **Fase 7**: frontend React (React Query, Context, Redux) con tests
+- [x] **Fase 7**: frontend React (React Query, Context, Redux) con tests
 - [ ] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después
 - [ ] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
 
@@ -405,6 +460,8 @@ reservas-platform/
 ├── .env.example
 ├── e2e/                    # prueba de punta a punta de la saga
 ├── observability/          # Loki, Alloy, Grafana
+├── apps/
+│   └── web/                # frontend (Vite + React + TypeScript + Tailwind)
 └── services/
     ├── auth-service/
     ├── restaurants-service/
