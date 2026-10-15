@@ -1,0 +1,17 @@
+# Abre pull requests para mantener al día las dependencias: el CI los prueba antes de que se puedan mergear.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      # Las actualizaciones menores y parches van juntas en un solo PR
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
+  - package-ecosystem: docker
+    directories: [/services/*, /apps/web]
+    schedule: { interval: monthly }

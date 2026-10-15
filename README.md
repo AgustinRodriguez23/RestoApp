@@ -2,7 +2,7 @@
 
 Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida como **arquitectura de microservicios**. Es un proyecto de práctica pensado para demostrar patrones reales: BFF, comunicación asíncrona con eventos, trazabilidad de logs, tests, Docker y CI/CD.
 
-> Estado: **Fase 7 completa** (frontend React con el flujo principal: ingresar, elegir restaurante, reservar, pagar la seña y ver mis reservas). Las demás fases están en la hoja de ruta.
+> Estado: **Fase 9 completa** (CI/CD con GitHub Actions: tests, integración, punta a punta con Docker y publicación de imágenes). Falta la Fase 8 (performance) y los pendientes de la hoja de ruta.
 
 ## Arquitectura objetivo
 
@@ -380,6 +380,52 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 - Sin Docker en mi entorno de desarrollo no pude probar la imagen `web` ni la configuración de nginx; sí probé el build de la imagen paso a paso (instalación aislada + `npm run build`) y el frontend contra los servicios reales con `npm run dev`.
 - Solo tema claro; sin traducciones (todo en español rioplatense).
 
+## Fase 9: CI/CD (GitHub Actions)
+
+Todo vive en `.github/` y **tiene que estar en la raíz del repositorio** (el repo es la carpeta `reservas-platform`).
+
+### `ci.yml`: se corre en cada pull request y en cada push a una rama que no sea `main`
+
+| Job | Qué verifica | Detalle |
+|---|---|---|
+| **Unitarios** (×6) | Compila (con chequeo de tipos) y corre los tests de `auth`, `restaurants`, `reservations`, `payments`, `web-bff` y `web` | Un job por paquete, en paralelo y con `fail-fast: false`: si uno falla se ve igual el estado de los demás. Usa `npm ci`, que instala exactamente lo del `package-lock.json` |
+| **Integración** (×2) | `reservations` y `payments` contra **PostgreSQL 16 y RabbitMQ reales** | Los lanza como *service containers* con los puertos y credenciales que esperan los tests |
+| **Imagen** (×6) | Que cada `Dockerfile` construya | Con caché de capas: si las dependencias no cambiaron no se reinstalan |
+| **Punta a punta** | Levanta **todo** con `docker compose` (bases, RabbitMQ, 5 servicios y el front) y corre la saga de la seña a través del BFF | Es lo único que prueba la red entre contenedores y el proxy de nginx. Si falla, sube los logs de todos los contenedores |
+| **Auditoría** | `npm audit` de las dependencias de producción | Avisa pero no bloquea (`continue-on-error`): un aviso nuevo en una librería no debería frenar un cambio que no la toca |
+
+Los secretos de la corrida punta a punta (`JWT_SECRET`, `GATEWAY_WEBHOOK_SECRET`) se generan al azar en el mismo job y se descartan: no hay que cargar nada en GitHub para que el CI ande.
+
+### `release.yml`: se corre al hacer push a `main` o al crear un tag `vX.Y.Z`
+
+1. Llama al CI completo (`uses: ./.github/workflows/ci.yml`). **Si algo falla, no se publica nada.**
+2. Construye las 6 imágenes y las sube a GitHub Container Registry: `ghcr.io/<usuario>/<repo>/<servicio>`.
+3. Etiquetas: `latest` y `sha-<commit>` en cada push a `main`; además `X.Y.Z` y `X.Y` si hay tag. La etiqueta `sha-…` permite volver a una versión exacta.
+
+Para publicar una versión: `git tag v0.1.0 && git push origin v0.1.0`.
+
+### Decisiones de seguridad
+
+- **Permisos mínimos**: el workflow completo tiene `contents: read`; solo el job `publish` agrega `packages: write`.
+- **Sin secretos propios**: se publica con el `GITHUB_TOKEN` temporal de cada corrida.
+- Las imágenes quedan **ligadas al commit** (etiquetas OCI), y las corridas de `main` y de tags no se cancelan entre sí: cada commit publicado quedó probado.
+- **Dependabot** propone actualizaciones de npm (menores y parches en un solo PR por semana), de las acciones y de las imágenes base; el CI las prueba antes de poder mergearlas.
+
+### Configurar en GitHub (una sola vez)
+
+1. **Settings → Actions → General → Workflow permissions**: dejá «Read repository contents» (los permisos de escritura ya los pide el job que los necesita).
+2. **Settings → Branches → Add rule** sobre `main`: *Require a pull request* y *Require status checks to pass* eligiendo los jobs del CI. Así no entra código que no pasó las pruebas.
+3. Después del primer release, en el perfil → **Packages**, las imágenes aparecen como privadas; se pueden hacer públicas desde la configuración de cada paquete.
+4. Para ver el estado en el README, agregá la insignia (cambiá `USUARIO/REPO`): `![CI](https://github.com/USUARIO/REPO/actions/workflows/ci.yml/badge.svg)`
+
+### Limitaciones conocidas
+
+- **No pude correr los workflows en GitHub** (no tengo acceso desde mi entorno). Lo que sí hice: validarlos con *actionlint* (sin errores; detecta, por ejemplo, un `needs:` que apunta a un job inexistente), y correr en una copia limpia, con `npm ci`, exactamente los mismos comandos que ejecuta cada job: build y tests de los 6 paquetes y la integración de reservations y payments, con las mismas variables que usa el CI. **No corrí el job punta a punta ni las construcciones de imágenes dentro de GitHub**: es probable que la primera corrida necesite algún ajuste; si falla, el log del job dice dónde.
+- Las versiones de las acciones (`actions/checkout@v4`, `docker/build-push-action@v6`...) son las que conocía; Dependabot las mantiene al día.
+- **No hay etapa de deploy**: se publican imágenes, pero no se despliegan a ningún servidor (todavía no hay un destino definido).
+- **No hay lint** en el pipeline porque los paquetes no tienen ESLint configurado todavía.
+- Los Dockerfile usan `npm install` (no `npm ci`), así que las imágenes no usan el lockfile; el CI sí lo usa para las pruebas. Pasarlos a `npm ci` requiere construir desde la raíz del monorepo.
+
 ## Trazabilidad de logs
 
 Una sola acción del usuario atraviesa varios servicios (BFF → reservations → restaurants). Cuando algo falla hay que poder responder: *¿qué le pasó a ESA request en cada servicio?*
@@ -449,7 +495,7 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Fase 6**: RabbitMQ, `payments-service` y saga de seña (idempotencia, compensaciones, DLQ)
 - [x] **Fase 7**: frontend React (React Query, Context, Redux) con tests
 - [ ] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después
-- [ ] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
+- [x] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
 
 ## Estructura
 
@@ -460,6 +506,9 @@ reservas-platform/
 ├── .env.example
 ├── e2e/                    # prueba de punta a punta de la saga
 ├── observability/          # Loki, Alloy, Grafana
+├── .github/
+│   ├── workflows/          # ci.yml (pruebas) y release.yml (publica imágenes)
+│   └── dependabot.yml
 ├── apps/
 │   └── web/                # frontend (Vite + React + TypeScript + Tailwind)
 └── services/
