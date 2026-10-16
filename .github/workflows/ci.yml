@@ -192,7 +192,6 @@ jobs:
     name: Auditoría de dependencias
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -200,4 +199,17 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm audit --omit=dev --audit-level=high
+      - name: npm audit (informativo, avisa pero no bloquea)
+        run: |
+          status=0
+          npm audit --omit=dev --audit-level=high > audit.txt 2>&1 || status=$?
+          cat audit.txt
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### Vulnerabilidades en dependencias de producción'
+              echo '```'
+              tail -n 40 audit.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=npm audit::Hay vulnerabilidades altas o críticas. Es informativo y no bloquea el merge."
+          fi
