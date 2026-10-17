@@ -133,10 +133,11 @@ async function main() {
     const addDish = (name) =>
       http('POST', `${RESTAURANTS}/restaurants/${restaurantId}/menu-items`, {
         token: owner,
-        body: { category: 'Postres', name, priceCents: 450000, allergens: ['LACTOSE'] },
+        body: { category: 'Postres', name, priceCents: 450000, allergens: ['MILK'] },
       });
 
-    check('agregar un plato responde 201', (await addDish('Flan casero')).status === 201);
+    const firstDish = await addDish('Flan casero');
+    check('agregar un plato responde 201', firstDish.status === 201, `${firstDish.status} ${JSON.stringify(firstDish.body)}`);
     const first = await overview();
     const menu = first.body.menu;
     check(

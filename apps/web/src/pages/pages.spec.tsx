@@ -179,7 +179,7 @@ describe('RestaurantPage', () => {
         body: {
           ...overview,
           menu: [
-            { category: 'Entradas', items: [dish('Provoleta', 850000, { allergens: ['LACTOSE'] })] },
+            { category: 'Entradas', items: [dish('Provoleta', 850000, { allergens: ['MILK'] })] },
             { category: 'Parrilla', items: [dish('Bife de chorizo', 2100000), dish('Vacío', 1900000, { available: false })] },
           ],
         },
@@ -190,7 +190,7 @@ describe('RestaurantPage', () => {
     expect(await screen.findByRole('heading', { name: 'Entradas' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Parrilla' })).toBeInTheDocument();
     expect(screen.getByText('Provoleta')).toBeInTheDocument();
-    expect(screen.getByText(/Contiene: /)).toBeInTheDocument();
+    expect(screen.getByText(/Contiene: .*lácteos/)).toBeInTheDocument();
     expect(screen.getByText('Bife de chorizo')).toBeInTheDocument();
     expect(screen.getByText('No disponible hoy')).toBeInTheDocument();
   });
