@@ -25,6 +25,7 @@ import { SecurityModule } from './security/security.module';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const ID = '64b7f0c2a1b2c3d4e5f60718';
 const OWNER = 'owner-1';
+const ORIGINAL_REDIS_URL = process.env.REDIS_URL;
 
 /** Documento falso con el mismo `toJSON` que aplica Mongoose (id en vez de _id). */
 const doc = (data: Record<string, unknown>) => ({
@@ -71,13 +72,17 @@ function buildFakes() {
 }
 
 async function buildApp(redisUrl: string) {
+  // OJO: ConfigService le da prioridad a las variables de ENTORNO sobre lo que se carga en `load`.
+  // En el CI el job define REDIS_URL, así que si acá solo se la pasara por `load`, el caso «sin caché»
+  // terminaría con el caché prendido. Por eso se fija en process.env (y se restaura al terminar).
+  process.env.REDIS_URL = redisUrl;
   const fakes = buildFakes();
   const moduleRef = await Test.createTestingModule({
     imports: [
       ConfigModule.forRoot({
         isGlobal: true,
         ignoreEnvFile: true,
-        load: [() => ({ JWT_SECRET: 'secreto-solo-para-tests', REDIS_URL: redisUrl, CACHE_TTL_SECONDS: '60' })],
+        load: [() => ({ JWT_SECRET: 'secreto-solo-para-tests', CACHE_TTL_SECONDS: '60' })],
       }),
       SecurityModule,
     ],
@@ -117,6 +122,8 @@ describe('caché a través de HTTP (Redis real)', () => {
   });
   afterAll(async () => {
     await admin.quit();
+    if (ORIGINAL_REDIS_URL === undefined) delete process.env.REDIS_URL;
+    else process.env.REDIS_URL = ORIGINAL_REDIS_URL;
   });
 
   describe('con caché', () => {
