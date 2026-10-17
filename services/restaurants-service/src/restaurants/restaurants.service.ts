@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { FilterQuery, Model, Types } from 'mongoose';
+import { CacheService } from '../cache/cache.service';
 import { MenuItem, MenuItemDocument } from '../menu/schemas/menu-item.schema';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { ListRestaurantsQueryDto } from './dto/list-restaurants-query.dto';
@@ -22,14 +23,30 @@ export class RestaurantsService {
   constructor(
     @InjectModel(Restaurant.name) private readonly model: Model<RestaurantDocument>,
     @InjectModel(MenuItem.name) private readonly menuItems: Model<MenuItemDocument>,
+    private readonly cache: CacheService,
   ) {}
 
   async create(ownerId: string, dto: CreateRestaurantDto): Promise<RestaurantDocument> {
     this.validateBusinessRules(dto);
-    return this.model.create({ ...dto, ownerId });
+    const created = await this.model.create({ ...dto, ownerId });
+    await this.cache.invalidate();
+    return created;
   }
 
+  /**
+   * Listado público. Solo se cachea el listado SIN búsqueda por texto: el texto lo escribe el usuario,
+   * hay infinitas combinaciones y casi nunca se repiten, así que llenarían Redis de claves que nadie vuelve a leer.
+   * Lo que sí se repite (la portada, cada página, cada filtro de cocina) es lo que más se pide.
+   */
   async findAll(query: ListRestaurantsQueryDto) {
+    const { page = 1, limit = 10, search, cuisine } = query;
+    if (search) return this.queryList(query);
+
+    const key = CacheService.key('list', CacheService.hash({ page, limit, cuisine: cuisine?.toLowerCase() }));
+    return this.cache.wrap(key, () => this.queryList(query));
+  }
+
+  private async queryList(query: ListRestaurantsQueryDto) {
     const { page = 1, limit = 10, search, cuisine } = query;
 
     const filter: FilterQuery<RestaurantDocument> = {};
@@ -46,6 +63,11 @@ export class RestaurantsService {
     ]);
 
     return { data, page, limit, total, totalPages: Math.ceil(total / limit) };
+  }
+
+  /** Detalle público (cacheado). Para uso interno, que necesita el documento de Mongoose, está `findOne`. */
+  async findPublic(id: string) {
+    return this.cache.wrap(CacheService.key('one', id), () => this.findOne(id));
   }
 
   async findOne(id: string): Promise<RestaurantDocument> {
@@ -72,6 +94,7 @@ export class RestaurantsService {
       runValidators: true,
     });
     if (!updated) throw new NotFoundException('Restaurante no encontrado');
+    await this.cache.invalidate();
     return updated;
   }
 
@@ -81,6 +104,7 @@ export class RestaurantsService {
     // se borra primero la carta y después el restaurante.
     await this.menuItems.deleteMany({ restaurantId: new Types.ObjectId(id) });
     await this.model.findByIdAndDelete(id);
+    await this.cache.invalidate();
   }
 
   /** Reglas que no se pueden expresar con decoradores de validación. */

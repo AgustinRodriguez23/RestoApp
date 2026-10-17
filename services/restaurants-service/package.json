@@ -10,7 +10,8 @@
     "start:prod": "node dist/main",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "test:integration": "jest --config jest-integration.json --runInBand --forceExit"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",
@@ -22,6 +23,7 @@
     "@nestjs/swagger": "^7.4.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "ioredis": "^5.4.1",
     "mongoose": "^8.5.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
@@ -40,13 +42,21 @@
     "typescript": "^5.5.0"
   },
   "jest": {
-    "moduleFileExtensions": ["js", "json", "ts"],
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.ts$": "ts-jest"
     },
-    "collectCoverageFrom": ["**/*.ts", "!main.ts", "!**/*.module.ts"],
+    "collectCoverageFrom": [
+      "**/*.ts",
+      "!main.ts",
+      "!**/*.module.ts"
+    ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   }

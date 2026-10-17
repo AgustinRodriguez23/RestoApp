@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useCreateReservation, useRestaurantOverview } from '../api/hooks';
-import type { MenuItem, OpeningHours } from '../api/types';
+import type { OpeningHours } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Button, EmptyState, ErrorNotice, Field, inputClass, Spinner } from '../components/ui';
 import { allergenLabel, dateInputValue, formatDay, formatMoney, formatTime } from '../lib/format';
@@ -10,12 +10,6 @@ import { bookingActions } from '../store/bookingSlice';
 import { toastActions } from '../store/toastSlice';
 
 const DAYS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-
-function groupByCategory(items: MenuItem[]): [string, MenuItem[]][] {
-  const groups = new Map<string, MenuItem[]>();
-  for (const item of items) groups.set(item.category, [...(groups.get(item.category) ?? []), item]);
-  return [...groups];
-}
 
 function Hours({ hours }: { hours: OpeningHours[] }) {
   if (hours.length === 0) return null;
@@ -211,7 +205,7 @@ export function RestaurantPage() {
         {warnings.some((w) => w.section === 'menu') && <ErrorNotice error={new Error('No pudimos cargar la carta. Probá de nuevo en un rato.')} title="Carta no disponible" onRetry={() => void refetch()} />}
         {menu && menu.length === 0 && <p className="text-muted">Este restaurante todavía no cargó su carta.</p>}
         {menu &&
-          groupByCategory(menu).map(([category, items]) => (
+          menu.map(({ category, items }) => (
             <div key={category} className="grid gap-2">
               <h3 className="text-lg font-semibold">{category}</h3>
               <ul className="divide-y divide-line rounded-xl border border-line bg-surface">

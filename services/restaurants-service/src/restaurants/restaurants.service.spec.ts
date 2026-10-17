@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
+import { CacheService } from '../cache/cache.service';
 import { MenuItem } from '../menu/schemas/menu-item.schema';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import { RestaurantsService } from './restaurants.service';
@@ -27,6 +28,7 @@ describe('RestaurantsService', () => {
     findByIdAndDelete: jest.Mock;
   };
   let menuItems: { deleteMany: jest.Mock };
+  let cache: { wrap: jest.Mock; invalidate: jest.Mock };
 
   const OWNER = 'owner-1';
   const OTHER = 'owner-2';
@@ -53,12 +55,15 @@ describe('RestaurantsService', () => {
       findByIdAndDelete: jest.fn(),
     };
     menuItems = { deleteMany: jest.fn() };
+    // El caché se prueba aparte (cache.service.spec.ts): acá wrap() simplemente ejecuta el loader
+    cache = { wrap: jest.fn((_key: string, loader: () => Promise<unknown>) => loader()), invalidate: jest.fn() };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         RestaurantsService,
         { provide: getModelToken(Restaurant.name), useValue: model },
         { provide: getModelToken(MenuItem.name), useValue: menuItems },
+        { provide: CacheService, useValue: cache },
       ],
     }).compile();
     service = moduleRef.get(RestaurantsService);
@@ -200,6 +205,87 @@ describe('RestaurantsService', () => {
       await expect(service.remove(ID, OTHER)).rejects.toBeInstanceOf(ForbiddenException);
       expect(menuItems.deleteMany).not.toHaveBeenCalled();
       expect(model.findByIdAndDelete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('caché', () => {
+    const keyUsed = () => cache.wrap.mock.calls[0][0] as string;
+
+    it('el listado sin búsqueda pasa por el caché', async () => {
+      model.find.mockReturnValue(findChain([]));
+      model.countDocuments.mockResolvedValue(0);
+
+      await service.findAll({ page: 1, limit: 10 });
+
+      expect(cache.wrap).toHaveBeenCalledTimes(1);
+      expect(keyUsed()).toMatch(/^list:/);
+    });
+
+    it('el listado CON búsqueda no se cachea (texto libre = demasiadas combinaciones)', async () => {
+      model.find.mockReturnValue(findChain([]));
+      model.countDocuments.mockResolvedValue(0);
+
+      await service.findAll({ search: 'parri' });
+
+      expect(cache.wrap).not.toHaveBeenCalled();
+    });
+
+    it('cada página y cada filtro tienen su propia clave; mayúsculas de la cocina no cambian la clave', async () => {
+      model.find.mockReturnValue(findChain([]));
+      model.countDocuments.mockResolvedValue(0);
+
+      await service.findAll({ page: 1, limit: 10 });
+      await service.findAll({ page: 2, limit: 10 });
+      await service.findAll({ page: 1, limit: 10, cuisine: 'Parrilla' });
+      await service.findAll({ page: 1, limit: 10, cuisine: 'PARRILLA' });
+
+      const keys = cache.wrap.mock.calls.map((c) => c[0]);
+      expect(new Set(keys.slice(0, 3)).size).toBe(3);
+      expect(keys[2]).toBe(keys[3]);
+    });
+
+    it('el detalle público se cachea por id', async () => {
+      model.findById.mockResolvedValue({ id: ID });
+
+      await service.findPublic(ID);
+
+      expect(keyUsed()).toBe(`one:${ID}`);
+    });
+
+    it('crear, modificar y borrar invalidan el caché', async () => {
+      model.create.mockResolvedValue({ id: ID });
+      model.findById.mockResolvedValue({ id: ID, ownerId: OWNER });
+      model.findByIdAndUpdate.mockResolvedValue({ id: ID });
+
+      await service.create(OWNER, validDto);
+      await service.update(ID, OWNER, { name: 'Nuevo' });
+      await service.remove(ID, OWNER);
+
+      expect(cache.invalidate).toHaveBeenCalledTimes(3);
+    });
+
+    it('si la escritura falla o no está permitida, NO se invalida (no cambió nada)', async () => {
+      model.findById.mockResolvedValue({ id: ID, ownerId: OWNER });
+
+      await expect(service.update(ID, OTHER, { name: 'x' })).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(service.remove(ID, OTHER)).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(cache.invalidate).not.toHaveBeenCalled();
+    });
+
+    it('invalida DESPUÉS de escribir, no antes', async () => {
+      const order: string[] = [];
+      model.create.mockImplementation(async () => {
+        order.push('mongo');
+        return { id: ID };
+      });
+      cache.invalidate.mockImplementation(async () => {
+        order.push('invalidate');
+      });
+
+      await service.create(OWNER, validDto);
+
+      expect(order).toEqual(['mongo', 'invalidate']);
     });
   });
 });

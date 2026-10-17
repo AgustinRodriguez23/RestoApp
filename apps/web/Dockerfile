@@ -8,6 +8,7 @@ ENV npm_config_fetch_retries=5 \
 COPY package.json ./
 RUN npm install
 COPY index.html tsconfig.json vite.config.ts ./
+COPY public ./public
 COPY src ./src
 # tsc antes del build: si el tipado falla, la imagen no se construye
 RUN npm run build

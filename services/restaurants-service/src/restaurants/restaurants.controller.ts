@@ -51,7 +51,7 @@ export class RestaurantsController {
   @ApiOkResponse({ description: 'El restaurante con sus mesas y horarios' })
   @ApiNotFoundResponse({ description: 'No existe un restaurante con ese id' })
   findOne(@Param('id', ParseObjectIdPipe) id: string) {
-    return this.restaurants.findOne(id);
+    return this.restaurants.findPublic(id);
   }
 
   @Post()
