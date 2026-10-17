@@ -1,6 +1,7 @@
 import { Link, Route, Routes } from 'react-router-dom';
-import { Layout, RequireAuth } from './components/Layout';
+import { Layout, RequireAuth, RequireOwner } from './components/Layout';
 import { LoginPage } from './pages/LoginPage';
+import { OwnerPage } from './pages/OwnerPage';
 import { PaymentPage } from './pages/PaymentPage';
 import { ReservationsPage } from './pages/ReservationsPage';
 import { RestaurantPage } from './pages/RestaurantPage';
@@ -27,6 +28,9 @@ export function App() {
         <Route element={<RequireAuth />}>
           <Route path="reservas" element={<ReservationsPage />} />
           <Route path="reservas/:id/pagar" element={<PaymentPage />} />
+          <Route element={<RequireOwner />}>
+            <Route path="panel" element={<OwnerPage />} />
+          </Route>
         </Route>
         <Route path="*" element={<NotFound />} />
       </Route>

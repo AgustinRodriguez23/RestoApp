@@ -23,6 +23,11 @@ export function Layout() {
                 Mis reservas
               </NavLink>
             )}
+            {user?.role === 'RESTAURANT_OWNER' && (
+              <NavLink to="/panel" className={navLink}>
+                Panel del local
+              </NavLink>
+            )}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm">
             {user ? (
@@ -54,5 +59,12 @@ export function RequireAuth() {
   const { isAuthenticated } = useAuth();
   const location = useLocation();
   if (!isAuthenticated) return <Navigate to="/ingresar" replace state={{ from: location.pathname + location.search }} />;
+  return <Outlet />;
+}
+
+/** Rutas del panel del dueño. El rol se vuelve a validar en el servidor: esto solo evita mostrar una pantalla que va a fallar. */
+export function RequireOwner() {
+  const { user } = useAuth();
+  if (user?.role !== 'RESTAURANT_OWNER') return <Navigate to="/" replace />;
   return <Outlet />;
 }

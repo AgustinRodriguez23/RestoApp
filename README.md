@@ -2,7 +2,7 @@
 
 Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida como **arquitectura de microservicios**. Es un proyecto de práctica pensado para demostrar patrones reales: BFF, comunicación asíncrona con eventos, trazabilidad de logs, tests, Docker y CI/CD.
 
-> Estado: **Fases 1 a 9 completas** (la 8, de performance, con mediciones del front y del backend). Quedan los pendientes de la hoja de ruta.
+> Estado: **Fases 1 a 9 completas** (la 8, de performance, con mediciones del front y del backend) y el **panel del dueño** (reservas del local). Quedan los pendientes de la hoja de ruta.
 
 ## Arquitectura objetivo
 
@@ -223,6 +223,9 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 | POST | `/reservations/:id/pay` | **Paga la seña** (header `Idempotency-Key` obligatorio): busca el pago de la reserva y cobra |
 | GET | `/reservations/:id/payment` | Estado del pago de la seña |
 | GET | `/me/overview` | **Agregada**: mi perfil + mis próximas 5 reservas + las que esperan el pago |
+| GET | `/owner/restaurants` | **Dueño**: mis restaurantes |
+| GET | `/owner/restaurants/:id/reservations` | **Dueño**: reservas del local (`date`, `status`, `page`, `limit`) |
+| PATCH | `/owner/reservations/:id/status` | **Dueño**: `COMPLETED` (asistió) o `NO_SHOW` (no vino). Para cancelar se usa `POST /reservations/:id/cancel`, que ya acepta al dueño |
 | GET | `/health` | Estado del BFF y de cada servicio (`ok` / `degraded`) |
 
 ### Decisiones de diseño
@@ -238,7 +241,7 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 ### Limitaciones conocidas
 
 - Sin caché propio: `/reservations/mine` consulta restaurants-service en cada llamada (desde la Fase 8 ese servicio responde desde Redis; ver «Fase 8»).
-- No hay endpoints para el dueño del restaurante (crear restaurantes, carta, ver reservas del local): se agregan cuando el frontend los necesite.
+- Del dueño solo están las reservas del local (ver «Panel del dueño»); crear restaurantes, mesas y carta se sigue haciendo desde el Swagger de restaurants-service.
 - Los DTOs de entrada están duplicados respecto de cada servicio; si cambian allá hay que actualizarlos acá.
 
 ## Fase 6: mensajería y pagos
@@ -352,6 +355,7 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 | `/ingresar` | Login y registro (vuelve a donde se quería ir) |
 | `/reservas/:id/pagar` | Paga la seña con los medios de prueba de la pasarela simulada; muestra el tiempo que queda de mesa retenida |
 | `/reservas` | Mis reservas con filtro por estado, pago de la seña y cancelación con confirmación |
+| `/panel` | **Dueño**: reservas del local por día y estado, «Asistió» / «No vino» y cancelar (ver «Panel del dueño») |
 
 ### Dónde vive cada tipo de estado (y por qué)
 
@@ -375,11 +379,58 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 
 ### Limitaciones conocidas
 
-- **Falta el panel del dueño del restaurante** (cargar restaurantes, carta, ver reservas del día): por ahora se hace desde el Swagger.
+- **El panel del dueño solo cubre las reservas del local** (ver «Panel del dueño»): crear restaurantes, editar mesas y carta, y el resumen del día se siguen haciendo desde el Swagger.
 - El **token se guarda en `localStorage`**: sobrevive al F5 pero un script malicioso (XSS) podría leerlo. Lo más seguro sería que el BFF lo entregue en una cookie `httpOnly`.
 - Los **tests** cubren la lógica y las pantallas con un servidor falso (`fetch` simulado); no hay todavía pruebas con un navegador real contra el stack (lo recorrí a mano con Playwright, pero ese script no está en el repo).
 - Sin Docker en mi entorno de desarrollo no pude probar la imagen `web` ni la configuración de nginx; sí probé el build de la imagen paso a paso (instalación aislada + `npm run build`) y el frontend contra los servicios reales con `npm run dev`.
 - Solo tema claro; sin traducciones (todo en español rioplatense).
+
+## Panel del dueño (`/panel`)
+
+El dueño de un restaurante ve las reservas de su local, marca si el cliente fue y puede cancelar. Alcance deliberadamente acotado: **solo reservas** (no crea ni edita restaurantes, mesas o carta, ni hay resumen del día).
+
+| Pieza | Qué se agregó |
+|---|---|
+| auth-service | El JWT ahora lleva `name` |
+| reservations-service | Columna `customer_name` (nullable), copiada del token al reservar y devuelta en la API |
+| restaurants-service | `GET /restaurants/mine` (rol `RESTAURANT_OWNER`, sin caché, ordenado por nombre) |
+| web-bff | Módulo `owner`: `GET /owner/restaurants`, `GET /owner/restaurants/:id/reservations`, `PATCH /owner/reservations/:id/status` |
+| apps/web | Ruta `/panel` (con `RequireOwner`), link «Panel del local» solo para dueños |
+
+### Qué se puede hacer según el momento de la reserva
+
+| Estado | Todavía no empezó | Ya empezó |
+|---|---|---|
+| `CONFIRMED` | **Cancelar** (se devuelve la seña) | **Asistió** / **No vino** |
+| `PENDING_PAYMENT` | solo se ve (el cliente todavía puede pagar) | — |
+| Resto | solo se ve | solo se ve |
+
+Esas reglas las impone reservations-service (`cancel` falla si ya comenzó; `status` falla si todavía no); la pantalla solo ofrece el botón que va a funcionar.
+
+### Decisiones que vale la pena mirar
+
+- **El nombre del cliente viaja en el JWT y se guarda en la reserva** (en vez de que el servicio de reservas le pregunte a auth-service). Evita una dependencia nueva entre servicios y una llamada por listado. Se guarda **solo el nombre**: sin email ni teléfono, para exponer lo mínimo al dueño.
+- **El nombre es una copia**: si el cliente cambia su nombre después, la reserva conserva el de ese momento (es lo que el local vio al reservar). Hoy no hay forma de cambiarlo, así que no es un caso real todavía.
+- **Tokens viejos y reservas viejas**: un token emitido antes del cambio no trae `name` (el campo es opcional en los servicios) y esa reserva queda con `customer_name = NULL`; el panel muestra «Cliente». Con volver a iniciar sesión alcanza. Las reservas anteriores no se completan solas.
+- **El BFF no duplica permisos**: reenvía y deja que cada servicio decida (restaurants-service para «mis restaurantes», reservations-service para las reservas de *ese* local). Un cliente o un dueño ajeno recibe el 403/404 del servicio. `RequireOwner` en el front solo evita mostrar una pantalla que iba a fallar; no es seguridad.
+- **`/restaurants/mine` va antes que `/restaurants/:id`** en el controlador; si no, Nest interpretaría «mine» como un id.
+- **Cancelar reutiliza `POST /reservations/:id/cancel`**: ese endpoint ya aceptaba al dueño, y el evento ya marca `CANCELLED_BY_OWNER` con devolución de la seña.
+
+### Cómo se probó
+
+- Tests unitarios y HTTP en los cuatro servicios y 8 tests de pantalla (`OwnerPage.spec.tsx`: acceso por rol, filtros, marcar asistencia, cancelar con confirmación, error del servidor, paginación).
+- La integración de reservations-service (Postgres y RabbitMQ reales) verifica que `customerName` se guarda desde el token.
+- La prueba de punta a punta tiene una sección nueva («8. Panel del dueño»): lista, nombre del cliente, filtro por día, dueño ajeno, marcar antes de hora (400), cancelar.
+- Recorrido en un navegador real con Playwright contra el stack (con un restaurants-service simulado, sin MongoDB real): sin errores de consola.
+
+### Limitaciones conocidas
+
+- Un dueño **sin restaurantes** no tiene cómo crear uno desde la pantalla: ve un aviso.
+- El selector de restaurante aparece solo si hay más de uno; con dos locales de igual nombre no se distinguen.
+- No hay filtros por rango de fechas ni por nombre del cliente; el listado es por **un día**.
+- Las reservas de varios locales no se juntan en una sola vista.
+- El panel no se actualiza solo: refresca al volver a la pestaña o al tocar una acción.
+- `DB_SYNCHRONIZE` crea la columna nueva automáticamente; en producción haría falta una migración.
 
 ## Fase 8: performance (Redis, k6, Lighthouse)
 
@@ -596,6 +647,7 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Fase 7**: frontend React (React Query, Context, Redux) con tests
 - [x] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después (front y backend medidos)
 - [x] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
+- [x] **Panel del dueño** (solo reservas del local)
 
 ## Estructura
 

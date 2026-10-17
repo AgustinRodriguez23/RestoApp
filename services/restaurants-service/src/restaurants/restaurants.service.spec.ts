@@ -135,6 +135,20 @@ describe('RestaurantsService', () => {
     });
   });
 
+  describe('findMine', () => {
+    it('busca solo los del dueño y los ordena por nombre, sin pasar por el caché', async () => {
+      const sort = jest.fn().mockResolvedValue([{ id: 'a' }]);
+      model.find.mockReturnValue({ sort });
+
+      const result = await service.findMine(OWNER);
+
+      expect(model.find).toHaveBeenCalledWith({ ownerId: OWNER });
+      expect(sort).toHaveBeenCalledWith({ name: 1 });
+      expect(result).toEqual([{ id: 'a' }]);
+      expect(cache.wrap).not.toHaveBeenCalled();
+    });
+  });
+
   describe('findOne / findOwned', () => {
     it('lanza 404 si el restaurante no existe', async () => {
       model.findById.mockResolvedValue(null);

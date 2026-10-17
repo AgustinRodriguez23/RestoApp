@@ -46,6 +46,19 @@ export class RestaurantsController {
     return this.restaurants.findAll(query);
   }
 
+  // Va ANTES de ':id': si no, Express interpretaría "mine" como un id.
+  @Get('mine')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.RESTAURANT_OWNER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Listar los restaurantes del dueño autenticado (solo RESTAURANT_OWNER)' })
+  @ApiOkResponse({ description: 'Arreglo de restaurantes ordenado por nombre (sin paginar, sin caché)' })
+  @ApiUnauthorizedResponse({ description: 'Token faltante, inválido o expirado' })
+  @ApiForbiddenResponse({ description: 'El usuario no tiene rol RESTAURANT_OWNER' })
+  findMine(@CurrentUser() user: JwtPayload) {
+    return this.restaurants.findMine(user.sub);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Ver un restaurante (público)' })
   @ApiOkResponse({ description: 'El restaurante con sus mesas y horarios' })

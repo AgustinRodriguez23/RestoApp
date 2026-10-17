@@ -45,7 +45,8 @@ describe('reservations-service (integración con PostgreSQL real)', () => {
   let ds: DataSource;
   let jwt: JwtService;
 
-  const bearer = (sub: string, role: Role = Role.CUSTOMER) => `Bearer ${jwt.sign({ sub, email: `${sub}@example.com`, role })}`;
+  const bearer = (sub: string, role: Role = Role.CUSTOMER) =>
+    `Bearer ${jwt.sign({ sub, email: `${sub}@example.com`, name: `Nombre de ${sub}`, role })}`;
   const ownerAuth = () => bearer('owner-1', Role.RESTAURANT_OWNER);
 
   const book = (customer: string, partySize: number, startsAt: string, restaurantId = RID) =>
@@ -135,6 +136,7 @@ describe('reservations-service (integración con PostgreSQL real)', () => {
       expect(res.body).toMatchObject({
         restaurantId: RID,
         customerId: 'c1',
+        customerName: 'Nombre de c1',
         partySize: 3,
         status: 'CONFIRMED',
         startsAt: new Date(at('20:00')).toISOString(),

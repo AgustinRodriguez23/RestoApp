@@ -109,6 +109,7 @@ export class ReservationsService {
               restaurantId: dto.restaurantId,
               tableNumber: table.number,
               customerId: user.sub,
+              customerName: user.name?.slice(0, 100) ?? null,
               partySize: dto.partySize,
               startsAt,
               endsAt,

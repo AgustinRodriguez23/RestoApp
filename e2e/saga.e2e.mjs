@@ -260,6 +260,44 @@ async function main() {
     check('sin Idempotency-Key el BFF rechaza (400)', (await http('POST', `${BFF}/reservations/${r.id}/pay`, { token: customer, body: { token: 'tok_approved' } })).status === 400);
   }
 
+  // ------------------------------------------------------------------ 8
+  // Panel del dueño: el nombre del cliente viaja en el JWT y queda guardado en la reserva
+  if (!process.env.E2E_RESTAURANT_ID) {
+    section('8. Panel del dueño: ver las reservas del local, marcar asistencia y cancelar');
+    const day = freshDay();
+    const created = (await reserve(slot(day, '21:00'))).body;
+    if (created.status === 'PENDING_PAYMENT') {
+      await pay(created.id, 'tok_approved');
+      await waitStatus(created.id, 'CONFIRMED');
+    }
+    const ownerList = (token, query = '') => http('GET', `${BFF}/owner/restaurants/${restaurantId}/reservations?${query}`, { token });
+
+    const mine = await http('GET', `${BFF}/owner/restaurants`, { token: owner });
+    check('el dueño ve su restaurante en /owner/restaurants', mine.status === 200 && mine.body.some((r) => (r.id ?? r._id) === restaurantId), JSON.stringify(mine.body));
+    check('un cliente no puede listar restaurantes de dueño (403)', (await http('GET', `${BFF}/owner/restaurants`, { token: customer })).status === 403);
+
+    const listed = await ownerList(owner, `date=${day}`);
+    const row = listed.body?.data?.find((x) => x.id === created.id);
+    check('el dueño ve la reserva del día', listed.status === 200 && !!row, `${listed.status} ${JSON.stringify(listed.body)}`);
+    check('la reserva trae el nombre del cliente (salió del JWT)', row?.customerName === 'E2E customer', JSON.stringify(row));
+    check('el filtro por día excluye otras fechas', (await ownerList(owner, `date=${freshDay()}`)).body?.data?.length === 0);
+
+    const stranger = await register('RESTAURANT_OWNER', 'stranger');
+    const foreign = await ownerList(stranger);
+    check('el dueño de OTRO restaurante no ve las reservas (403/404)', [403, 404].includes(foreign.status), String(foreign.status));
+    check('un cliente no ve las reservas del local (403/404)', [403, 404].includes((await ownerList(customer)).status));
+
+    const early = await http('PATCH', `${BFF}/owner/reservations/${created.id}/status`, { token: owner, body: { status: 'COMPLETED' } });
+    check('marcar "asistió" antes de la hora da 400', early.status === 400, String(early.status));
+    const bad = await http('PATCH', `${BFF}/owner/reservations/${created.id}/status`, { token: owner, body: { status: 'CANCELLED' } });
+    check('por esta ruta no se puede poner CANCELLED (400)', bad.status === 400, String(bad.status));
+
+    const cancelled = await http('POST', `${BFF}/reservations/${created.id}/cancel`, { token: owner });
+    check('el dueño cancela la reserva futura', cancelled.status === 200 && cancelled.body.status === 'CANCELLED', JSON.stringify(cancelled.body));
+    const afterCancel = await ownerList(owner, `date=${day}&status=CANCELLED`);
+    check('aparece en el filtro "canceladas"', afterCancel.body?.data?.some((x) => x.id === created.id));
+  }
+
   // ------------------------------------------------------------------ 7
   if (process.env.E2E_EXPIRY === '1') {
     section('7. Vencimiento: si no paga a tiempo, la mesa se libera');

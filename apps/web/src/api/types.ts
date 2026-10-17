@@ -108,6 +108,20 @@ export interface Reservation {
   payment: Payment | null;
 }
 
+/** Una reserva vista por el dueño del local: trae el nombre del cliente (null en reservas anteriores a este dato). */
+export interface OwnerReservation {
+  id: string;
+  restaurantId: string;
+  tableNumber: number;
+  customerName: string | null;
+  partySize: number;
+  startsAt: string;
+  endsAt: string;
+  status: ReservationStatus;
+  depositCents: number;
+  notes: string | null;
+}
+
 export interface CreateReservationInput {
   restaurantId: string;
   partySize: number;

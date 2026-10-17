@@ -633,6 +633,79 @@ describe('web-bff (HTTP + servicios falsos)', () => {
     });
   });
 
+  describe('panel del dueño (/owner)', () => {
+    const asOwner = () => `Bearer ${jwt.sign({ sub: 'owner-1', email: 'o@example.com', role: 'RESTAURANT_OWNER' })}`;
+
+    it('sin token responde 401 y no llama a ningún servicio', async () => {
+      await server().get('/owner/restaurants').expect(401);
+      expect(restaurants.calls).toHaveLength(0);
+    });
+
+    it('lista mis restaurantes reenviando el token', async () => {
+      restaurants.handler = () => ok([{ id: RID, name: 'La Parrilla' }]);
+
+      const res = await server().get('/owner/restaurants').set('Authorization', asOwner()).expect(200);
+
+      expect(res.body).toEqual([{ id: RID, name: 'La Parrilla' }]);
+      expect(restaurants.calls[0]).toMatchObject({ method: 'GET', path: '/restaurants/mine' });
+      expect(restaurants.calls[0].headers.authorization).toBe(asOwner());
+    });
+
+    it('un cliente recibe el 403 de restaurants-service', async () => {
+      restaurants.handler = () => fail(403, 'Requiere rol RESTAURANT_OWNER');
+
+      const res = await server().get('/owner/restaurants').set('Authorization', authz()).expect(403);
+
+      expect(res.body.message).toMatch(/RESTAURANT_OWNER/);
+    });
+
+    it('lista las reservas del local con sus filtros', async () => {
+      reservations.handler = () => ok({ data: [{ id: RES_ID, customerName: 'Ana Pérez' }], page: 1, limit: 20, total: 1, totalPages: 1 });
+
+      const res = await server()
+        .get(`/owner/restaurants/${RID}/reservations?date=2026-10-16&status=CONFIRMED&page=2&limit=20`)
+        .set('Authorization', asOwner())
+        .expect(200);
+
+      expect(res.body.data[0].customerName).toBe('Ana Pérez');
+      expect(reservations.calls[0].path.startsWith(`/reservations/restaurant/${RID}?`)).toBe(true);
+      expect(query(reservations.calls[0])).toEqual({ date: '2026-10-16', status: 'CONFIRMED', page: '2', limit: '20' });
+    });
+
+    it('rechaza ids y filtros inválidos sin llamar al servicio', async () => {
+      const bad = (url: string) => server().get(url).set('Authorization', asOwner()).expect(400);
+      await bad('/owner/restaurants/no-es-id/reservations');
+      await bad(`/owner/restaurants/${RID}/reservations?date=16-10-2026`);
+      await bad(`/owner/restaurants/${RID}/reservations?status=INVENTADO`);
+      expect(reservations.calls).toHaveLength(0);
+    });
+
+    it('un dueño ajeno recibe el 403 de reservations-service', async () => {
+      reservations.handler = () => fail(403, 'No sos el dueño de este restaurante');
+      await server().get(`/owner/restaurants/${RID}/reservations`).set('Authorization', asOwner()).expect(403);
+    });
+
+    it('marca una reserva como NO_SHOW', async () => {
+      reservations.handler = () => ok({ id: RES_ID, status: 'NO_SHOW' });
+
+      const res = await server().patch(`/owner/reservations/${RES_ID}/status`).set('Authorization', asOwner()).send({ status: 'NO_SHOW' }).expect(200);
+
+      expect(res.body.status).toBe('NO_SHOW');
+      expect(reservations.calls[0]).toMatchObject({ method: 'PATCH', path: `/reservations/${RES_ID}/status`, body: { status: 'NO_SHOW' } });
+    });
+
+    it('solo acepta COMPLETED o NO_SHOW (CANCELLED tiene su propio endpoint)', async () => {
+      await server().patch(`/owner/reservations/${RES_ID}/status`).set('Authorization', asOwner()).send({ status: 'CANCELLED' }).expect(400);
+      expect(reservations.calls).toHaveLength(0);
+    });
+
+    it('propaga el 400 si la reserva todavía no empezó', async () => {
+      reservations.handler = () => fail(400, 'La reserva todavía no empezó');
+      const res = await server().patch(`/owner/reservations/${RES_ID}/status`).set('Authorization', asOwner()).send({ status: 'COMPLETED' }).expect(400);
+      expect(res.body.message).toMatch(/todavía/);
+    });
+  });
+
   describe('trazabilidad de logs', () => {
     type Line = Record<string, unknown>;
     let lines: Line[];
@@ -796,6 +869,9 @@ describe('web-bff (HTTP + servicios falsos)', () => {
           '/auth/register',
           '/health',
           '/me/overview',
+          '/owner/reservations/{id}/status',
+          '/owner/restaurants',
+          '/owner/restaurants/{id}/reservations',
           '/reservations',
           '/reservations/mine',
           '/reservations/{id}',

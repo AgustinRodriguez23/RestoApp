@@ -65,6 +65,11 @@ export class RestaurantsService {
     return { data, page, limit, total, totalPages: Math.ceil(total / limit) };
   }
 
+  /** Restaurantes del dueño. Sin caché: es una lista corta, privada, y el dueño espera ver sus cambios al instante. */
+  async findMine(ownerId: string) {
+    return this.model.find({ ownerId }).sort({ name: 1 });
+  }
+
   /** Detalle público (cacheado). Para uso interno, que necesita el documento de Mongoose, está `findOne`. */
   async findPublic(id: string) {
     return this.cache.wrap(CacheService.key('one', id), () => this.findOne(id));

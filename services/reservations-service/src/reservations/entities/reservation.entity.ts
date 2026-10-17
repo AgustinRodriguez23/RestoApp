@@ -27,6 +27,10 @@ export class Reservation {
   @Column({ name: 'customer_id', type: 'varchar' })
   customerId: string;
 
+  /** Nombre del cliente al reservar (copia del JWT). Null en reservas anteriores a este campo. */
+  @Column({ name: 'customer_name', type: 'varchar', length: 100, nullable: true })
+  customerName: string | null;
+
   @Column({ name: 'party_size', type: 'int' })
   partySize: number;
 

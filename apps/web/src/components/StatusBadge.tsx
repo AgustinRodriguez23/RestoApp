@@ -21,8 +21,12 @@ const PAYMENT: Record<PaymentStatus, { label: string; tone: string }> = {
 
 const base = 'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold leading-none';
 
-export function ReservationBadge({ status }: { status: ReservationStatus }) {
-  const { label, tone } = RESERVATION[status];
+/** El dueño lee los estados desde su lado: "No asististe" para el cliente es "No vino" para el local. */
+const OWNER_LABELS: Partial<Record<ReservationStatus, string>> = { COMPLETED: 'Asistió', NO_SHOW: 'No vino' };
+
+export function ReservationBadge({ status, audience = 'customer' }: { status: ReservationStatus; audience?: 'customer' | 'owner' }) {
+  const { label: customerLabel, tone } = RESERVATION[status];
+  const label = audience === 'owner' ? (OWNER_LABELS[status] ?? customerLabel) : customerLabel;
   return <span className={`${base} ${tone}`}>{label}</span>;
 }
 

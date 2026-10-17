@@ -25,7 +25,7 @@ export interface ApiResponse<T> {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PATCH';
   body?: unknown;
   query?: Record<string, string | number | undefined>;
   headers?: Record<string, string>;
@@ -96,4 +96,5 @@ export const api = {
     request<T>(path, { query, signal }).then((r) => r.data),
   post: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
     request<T>(path, { method: 'POST', body, headers }),
+  patch: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body }).then((r) => r.data),
 };

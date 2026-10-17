@@ -45,7 +45,7 @@ const restaurant: RestaurantInfo = {
   openingHours: [{ dayOfWeek: 5, opens: '20:00', closes: '01:00' }], // viernes de 20:00 a 01:00
 };
 
-const customer: JwtPayload = { sub: 'cust-1', email: 'c@example.com', role: Role.CUSTOMER };
+const customer: JwtPayload = { sub: 'cust-1', email: 'c@example.com', name: 'Ana Pérez', role: Role.CUSTOMER };
 const stranger: JwtPayload = { sub: 'cust-2', email: 's@example.com', role: Role.CUSTOMER };
 const owner: JwtPayload = { sub: 'owner-1', email: 'o@example.com', role: Role.RESTAURANT_OWNER };
 const otherOwner: JwtPayload = { sub: 'owner-2', email: 'o2@example.com', role: Role.RESTAURANT_OWNER };
@@ -187,6 +187,16 @@ describe('ReservationsService', () => {
       await service.create(stranger, dto({ notes: 'Cumpleaños' }));
 
       expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ customerId: 'cust-2', notes: 'Cumpleaños' }));
+    });
+
+    it('guarda el nombre del cliente tomado del token', async () => {
+      await service.create(customer, dto());
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ customerName: 'Ana Pérez' }));
+    });
+
+    it('guarda null si el token es viejo y no trae nombre', async () => {
+      await service.create(stranger, dto());
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ customerName: null }));
     });
 
     it('si la mesa elegida está ocupada, prueba con la siguiente que sirva', async () => {

@@ -15,6 +15,9 @@ export class ReservationDto {
   @ApiProperty({ description: 'Id del usuario que reservó' })
   customerId: string;
 
+  @ApiPropertyOptional({ nullable: true, description: 'Nombre del cliente (null en reservas viejas)' })
+  customerName: string | null;
+
   @ApiProperty({ example: 4 })
   partySize: number;
 

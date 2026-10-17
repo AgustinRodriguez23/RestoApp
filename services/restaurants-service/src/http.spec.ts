@@ -24,6 +24,7 @@ describe('API HTTP de restaurants-service', () => {
     findAll: jest.fn(),
     findOne: jest.fn(),
     findPublic: jest.fn(),
+    findMine: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     remove: jest.fn(),
@@ -116,6 +117,33 @@ describe('API HTTP de restaurants-service', () => {
 
       expect(res.body).toEqual({ id: ID, name: 'La Parrilla' });
       expect(restaurants.findPublic).toHaveBeenCalledWith(ID);
+    });
+
+    describe('GET /restaurants/mine', () => {
+      it('sin token responde 401', async () => {
+        await request(app.getHttpServer()).get('/restaurants/mine').expect(401);
+      });
+
+      it('un CUSTOMER recibe 403', async () => {
+        await request(app.getHttpServer())
+          .get('/restaurants/mine')
+          .set('Authorization', `Bearer ${tokenFor(Role.CUSTOMER)}`)
+          .expect(403);
+        expect(restaurants.findMine).not.toHaveBeenCalled();
+      });
+
+      it('un dueño recibe SUS restaurantes (no se confunde con :id)', async () => {
+        restaurants.findMine.mockResolvedValue([{ id: ID, name: 'La Parrilla' }]);
+
+        const res = await request(app.getHttpServer())
+          .get('/restaurants/mine')
+          .set('Authorization', `Bearer ${tokenFor(Role.RESTAURANT_OWNER, 'owner-7')}`)
+          .expect(200);
+
+        expect(res.body).toEqual([{ id: ID, name: 'La Parrilla' }]);
+        expect(restaurants.findMine).toHaveBeenCalledWith('owner-7');
+        expect(restaurants.findPublic).not.toHaveBeenCalled();
+      });
     });
 
     it('GET /restaurants/:id/menu pasa includeUnavailable solo si es exactamente "true"', async () => {
