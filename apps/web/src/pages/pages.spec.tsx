@@ -163,6 +163,38 @@ describe('RestaurantPage', () => {
     await waitFor(() => expect(server.callsTo('GET', `/restaurants/${RID}/overview`).length).toBeGreaterThan(1));
   });
 
+  it('muestra la carta TAL COMO la devuelve el servicio: agrupada por categoría', async () => {
+    const dish = (name: string, priceCents: number, extra: Record<string, unknown> = {}) => ({
+      id: name,
+      category: 'ignorada',
+      name,
+      priceCents,
+      allergens: [],
+      variants: [],
+      available: true,
+      ...extra,
+    });
+    mockApi({
+      'GET /restaurants/64b7f0c2a1b2c3d4e5f60718/overview': {
+        body: {
+          ...overview,
+          menu: [
+            { category: 'Entradas', items: [dish('Provoleta', 850000, { allergens: ['LACTOSE'] })] },
+            { category: 'Parrilla', items: [dish('Bife de chorizo', 2100000), dish('Vacío', 1900000, { available: false })] },
+          ],
+        },
+      },
+    });
+    renderApp(`/restaurantes/${RID}`);
+
+    expect(await screen.findByRole('heading', { name: 'Entradas' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Parrilla' })).toBeInTheDocument();
+    expect(screen.getByText('Provoleta')).toBeInTheDocument();
+    expect(screen.getByText(/Contiene: /)).toBeInTheDocument();
+    expect(screen.getByText('Bife de chorizo')).toBeInTheDocument();
+    expect(screen.getByText('No disponible hoy')).toBeInTheDocument();
+  });
+
   it('sin horarios libres dice qué probar; y si falla la carta igual se puede reservar', async () => {
     mockApi({
       'GET /restaurants/64b7f0c2a1b2c3d4e5f60718/overview': {

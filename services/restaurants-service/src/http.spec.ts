@@ -23,6 +23,7 @@ describe('API HTTP de restaurants-service', () => {
   const restaurants = {
     findAll: jest.fn(),
     findOne: jest.fn(),
+    findPublic: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     remove: jest.fn(),
@@ -105,7 +106,16 @@ describe('API HTTP de restaurants-service', () => {
       const res = await request(app.getHttpServer()).get('/restaurants/no-es-un-id').expect(400);
 
       expect(res.body.message).toMatch(/formato/);
-      expect(restaurants.findOne).not.toHaveBeenCalled();
+      expect(restaurants.findPublic).not.toHaveBeenCalled();
+    });
+
+    it('GET /restaurants/:id devuelve el detalle público (por la vía cacheada)', async () => {
+      restaurants.findPublic.mockResolvedValue({ id: ID, name: 'La Parrilla' });
+
+      const res = await request(app.getHttpServer()).get(`/restaurants/${ID}`).expect(200);
+
+      expect(res.body).toEqual({ id: ID, name: 'La Parrilla' });
+      expect(restaurants.findPublic).toHaveBeenCalledWith(ID);
     });
 
     it('GET /restaurants/:id/menu pasa includeUnavailable solo si es exactamente "true"', async () => {

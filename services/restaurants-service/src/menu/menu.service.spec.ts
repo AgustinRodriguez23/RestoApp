@@ -1,6 +1,7 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
+import { CacheService } from '../cache/cache.service';
 import { RestaurantsService } from '../restaurants/restaurants.service';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
 import { MenuService } from './menu.service';
@@ -15,6 +16,7 @@ describe('MenuService', () => {
     findOneAndDelete: jest.Mock;
   };
   let restaurants: { findOne: jest.Mock; findOwned: jest.Mock };
+  let cache: { wrap: jest.Mock; invalidate: jest.Mock };
 
   const RESTAURANT_ID = '64b7f0c2a1b2c3d4e5f60718';
   const ITEM_ID = '64b7f0c2a1b2c3d4e5f60999';
@@ -35,11 +37,14 @@ describe('MenuService', () => {
     };
     restaurants = { findOne: jest.fn().mockResolvedValue({}), findOwned: jest.fn().mockResolvedValue({}) };
 
+    cache = { wrap: jest.fn((_key: string, loader: () => Promise<unknown>) => loader()), invalidate: jest.fn() };
+
     const moduleRef = await Test.createTestingModule({
       providers: [
         MenuService,
         { provide: getModelToken(MenuItem.name), useValue: items },
         { provide: RestaurantsService, useValue: restaurants },
+        { provide: CacheService, useValue: cache },
       ],
     }).compile();
     service = moduleRef.get(MenuService);
@@ -155,6 +160,43 @@ describe('MenuService', () => {
       items.findOneAndDelete.mockResolvedValue({ id: ITEM_ID });
 
       await expect(service.removeItem(RESTAURANT_ID, ITEM_ID, OWNER)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('caché', () => {
+    it('la carta se cachea por restaurante y según incluya o no platos no disponibles', async () => {
+      items.find.mockReturnValue({ sort: jest.fn().mockResolvedValue([]) });
+
+      await service.getMenu(RESTAURANT_ID);
+      await service.getMenu(RESTAURANT_ID, true);
+
+      const [a, b] = cache.wrap.mock.calls.map((c) => c[0]);
+      expect(a).toBe(`menu:${RESTAURANT_ID}:false`);
+      expect(b).toBe(`menu:${RESTAURANT_ID}:true`);
+    });
+
+    it('agregar, modificar y quitar un plato invalidan el caché', async () => {
+      items.create.mockResolvedValue({ id: ITEM_ID });
+      items.findOneAndUpdate.mockResolvedValue({ id: ITEM_ID });
+      items.findOneAndDelete.mockResolvedValue({ id: ITEM_ID });
+
+      await service.addItem(RESTAURANT_ID, OWNER, dto);
+      await service.updateItem(RESTAURANT_ID, ITEM_ID, OWNER, { available: false });
+      await service.removeItem(RESTAURANT_ID, ITEM_ID, OWNER);
+
+      expect(cache.invalidate).toHaveBeenCalledTimes(3);
+    });
+
+    it('si el plato no existe (404) no invalida nada', async () => {
+      items.findOneAndUpdate.mockResolvedValue(null);
+      items.findOneAndDelete.mockResolvedValue(null);
+
+      await expect(service.updateItem(RESTAURANT_ID, ITEM_ID, OWNER, { name: 'x' })).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      await expect(service.removeItem(RESTAURANT_ID, ITEM_ID, OWNER)).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(cache.invalidate).not.toHaveBeenCalled();
     });
   });
 });

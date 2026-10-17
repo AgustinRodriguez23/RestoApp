@@ -2,7 +2,7 @@
 
 Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida como **arquitectura de microservicios**. Es un proyecto de práctica pensado para demostrar patrones reales: BFF, comunicación asíncrona con eventos, trazabilidad de logs, tests, Docker y CI/CD.
 
-> Estado: **Fase 9 completa** (CI/CD con GitHub Actions: tests, integración, punta a punta con Docker y publicación de imágenes). Falta la Fase 8 (performance) y los pendientes de la hoja de ruta.
+> Estado: **Fases 1 a 9 completas** (la 8, de performance, con las mediciones del front hechas y el kit para medir el backend en tu máquina). Quedan los pendientes de la hoja de ruta.
 
 ## Arquitectura objetivo
 
@@ -32,6 +32,7 @@ Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida
 | `notifications-service` | Consume eventos y notifica | MongoDB | — | Pendiente |
 | `web-bff` | Entrada única del frontend, agrega datos | — | 3000 | ✅ Fase 4 |
 | `web` (`apps/web`) | Frontend React: buscar, reservar, pagar la seña | — | 5173 | ✅ Fase 7 |
+| `redis` | Caché de lecturas de `restaurants-service` | — | 6379 | ✅ Fase 8 |
 
 ## Stack
 
@@ -236,7 +237,7 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 
 ### Limitaciones conocidas
 
-- Sin caché: `/reservations/mine` consulta restaurants-service en cada llamada (Redis llega en la Fase 8).
+- Sin caché propio: `/reservations/mine` consulta restaurants-service en cada llamada (desde la Fase 8 ese servicio responde desde Redis; ver «Fase 8»).
 - No hay endpoints para el dueño del restaurante (crear restaurantes, carta, ver reservas del local): se agregan cuando el frontend los necesite.
 - Los DTOs de entrada están duplicados respecto de cada servicio; si cambian allá hay que actualizarlos acá.
 
@@ -380,19 +381,95 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 - Sin Docker en mi entorno de desarrollo no pude probar la imagen `web` ni la configuración de nginx; sí probé el build de la imagen paso a paso (instalación aislada + `npm run build`) y el frontend contra los servicios reales con `npm run dev`.
 - Solo tema claro; sin traducciones (todo en español rioplatense).
 
+## Fase 8: performance (Redis, k6, Lighthouse)
+
+La regla de esta fase: **no se optimiza nada sin medir antes y después**. Se midió el front con Lighthouse (resultados abajo) y se dejó armado todo para medir el backend con k6 en tu máquina (`perf/README.md`).
+
+### Caché de lecturas con Redis (`restaurants-service/src/cache`)
+
+Los datos que más se piden (listado, detalle de un restaurante, carta) cambian poco: cada pedido iguala a los anteriores y MongoDB repite el mismo trabajo. Se aplicó el patrón **cache-aside**: se mira Redis; si está (*hit*) se responde desde ahí; si no (*miss*) se consulta MongoDB, se guarda con vencimiento y se responde.
+
+| Pedido | ¿Se cachea? | Por qué |
+|---|---|---|
+| `GET /restaurants` (sin `search`) | Sí, por página y filtro de cocina | Es la portada: se repite todo el tiempo |
+| `GET /restaurants?search=...` | **No** | El texto lo escribe cada usuario: hay infinitas combinaciones y casi no se repiten; llenarían Redis de claves inútiles |
+| `GET /restaurants/:id` | Sí | Lo usan el BFF y reservations-service en cada reserva |
+| `GET /restaurants/:id/menu` | Sí (con y sin platos no disponibles, por separado) | Es la parte más pesada de la pantalla de un restaurante |
+| Disponibilidad de mesas (reservations-service) | **No** | Cambia con cada reserva: un dato viejo permitiría ofrecer una mesa ocupada |
+
+### Decisiones que vale la pena mirar
+
+- **Invalidación por versión.** Todas las claves llevan un número de versión (`restaurants:v7:...`). Cuando alguien crea, modifica o borra un restaurante o un plato, se incrementa ese número y las claves anteriores quedan fuera de alcance (se limpian solas por vencimiento). Es más simple que buscar y borrar claves una por una, y además evita una carrera: una lectura lenta que empezó antes de la escritura guarda su dato viejo bajo la versión vieja, que ya nadie consulta.
+- **Se invalida después de escribir, no antes**, y solo si la escritura tuvo éxito (un 403 o un 404 no invalidan).
+- **Redis es una optimización, no una dependencia.** Si se cae o tarda, el pedido se resuelve desde MongoDB (tiempos cortos y sin cola de espera). Si falta `REDIS_URL`, el servicio anda igual que antes de la fase. Esto además permite medir "sin caché" con el mismo código.
+- **Una sola consulta por clave** (*single-flight*): si llegan 100 pedidos juntos por algo que no está en el caché, solo uno va a MongoDB y los otros esperan ese resultado. Evita la «estampida» cuando vence una clave popular.
+- **Los errores no se cachean** (un 404 de hoy no puede ser un 404 de mañana).
+- **Vencimiento de 60 s** (`CACHE_TTL_SECONDS`): red de seguridad por si alguna escritura se hiciera sin pasar por el servicio.
+- Redis en Docker: sin persistencia, 64 MB como máximo y `volatile-lru` (si se llena, descarta solo claves con vencimiento, las menos usadas; la clave de versión no vence, así que nunca se descarta).
+
+### Cómo se probó
+
+- 14 tests unitarios del caché (aciertos, vencimiento, invalidación, la carrera descrita arriba, 100 pedidos simultáneos, Redis caído, valor corrupto) y tests de que cada servicio cachea lo que debe e invalida cuando debe.
+- 15 tests de integración contra un **Redis real** (`npm run test:integration -w restaurants-service`, también en el CI), incluyendo uno de punta a punta por HTTP que cuenta cuántas veces se consulta la base. Verifiqué que las pruebas fallan si se rompe la invalidación, la versión o la deduplicación.
+- En la prueba de punta a punta (`npm run test:e2e`) hay una sección nueva: después de agregar un plato o renombrar el restaurante, el BFF tiene que mostrar el dato nuevo enseguida.
+
+### Resultados del front (Lighthouse, móvil simulado, mediana de 5 corridas)
+
+Medido en mi entorno con la app construida y servida por nginx con la misma configuración de la imagen. Los valores absolutos dependen de la máquina; lo que importa es la diferencia.
+
+| | Listado antes | Listado después | Detalle antes | Detalle después |
+|---|---:|---:|---:|---:|
+| Performance (0-100) | 85 | **98** | 90 | **98** |
+| First Contentful Paint | 3,2 s | **1,9 s** | 2,8 s | **1,6 s** |
+| Largest Contentful Paint | 3,4 s | **1,9 s** | 3,0 s | **2,1 s** |
+| Datos transferidos | 441 KB | **189 KB** | 441 KB | **189 KB** |
+| SEO | 82 | **100** | 82 | **100** |
+| Accesibilidad / Buenas prácticas | 100 / 100 | 100 / 100 | 100 / 100 | 100 / 100 |
+
+Qué lo causó, en orden de impacto (cada cambio se midió por separado):
+
+1. **Compresión gzip en nginx** (seis directivas en `apps/web/nginx.conf`): Performance 85 → 99 y FCP 3,2 → 1,7 s. El JS y el CSS son texto y se achican ~70 %; sin compresión el navegador bajaba los 354 KB del bundle completos.
+2. **`robots.txt` y `meta description`**: SEO 82 → 100. Sin `robots.txt`, nginx devolvía `index.html` (el comodín de la app de una sola página) y los buscadores lo leían como reglas inválidas.
+3. **Probado y descartado: dividir el código por rutas** (`React.lazy`). Ahorraba unos 5 KB comprimidos en la carga inicial y no se notó en las medidas: las pantallas pesan muy poco, el grueso del bundle son las librerías (React). No justificaba la complejidad extra (más pedidos, estados de carga, tests más complicados).
+
+### Resultados del backend (k6): para completar con tus números
+
+Seguí `perf/README.md` (seed → medir sin caché → medir con caché → `node perf/compare.mjs`) y pegá acá la tabla que imprime:
+
+| Pedido | p50 antes | p50 después | p95 antes | p95 después | Cambio p95 |
+|---|---:|---:|---:|---:|---:|
+| Listado (cacheado) | — | — | — | — | — |
+| Pantalla de restaurante (cacheado) | — | — | — | — | — |
+| Búsqueda por texto (NO cacheado, control) | — | — | — | — | — |
+
+### Un bug real que apareció al medir
+
+Al correr Lighthouse sobre la pantalla de un restaurante con carta, la consola del navegador mostró un error: el front esperaba la carta como una lista plana de platos, pero `restaurants-service` la devuelve **agrupada por categoría** (`[{ category, items: [...] }]`). Los tests del front simulaban la forma equivocada y por eso no lo detectaron. Se corrigió el front, se agregó un test con una carta real y una sección en el e2e que verifica la forma de la respuesta del BFF. La lección: los tests que simulan al otro lado solo prueban lo que uno *cree* que devuelve; hace falta al menos una prueba contra el servicio real.
+
+### Limitaciones conocidas
+
+- **No pude medir el backend**: mi entorno no tiene MongoDB ni Docker. Verifiqué la lógica del caché con Redis real y modelos simulados, y que los scripts de k6 corren contra un stack simulado, pero **los tiempos del antes/después del backend no están medidos**: hay que correr `perf/`.
+- Los números de Lighthouse son de un entorno simulado (CPU y red *throttled* por software), útiles para comparar entre sí, no como valores absolutos.
+- El caché es invalidación global: cualquier escritura descarta todo. Es correcto y simple porque se edita muy poco comparado con lo que se lee; con un panel de dueños muy activo habría que invalidar por restaurante.
+- La página sigue renderizándose en el navegador (SPA): el contenido aparece después de bajar el JS y pedir los datos. Mejorarlo más exigiría renderizado en el servidor o prerenderizado, que es otro proyecto.
+- No hay caché en el BFF ni en el navegador para las llamadas a la API (por ejemplo, `Cache-Control`/ETag). Es el siguiente paso natural si la medición muestra que hace falta.
+
 ## Fase 9: CI/CD (GitHub Actions)
 
-Todo vive en `.github/` y **tiene que estar en la raíz del repositorio** (el repo es la carpeta `reservas-platform`).
+Todo vive en `.github/` y **tiene que estar en la raíz del repositorio** (el repo es la carpeta `reservas-platform`, no una carpeta más arriba).
 
-### `ci.yml`: se corre en cada pull request y en cada push a una rama que no sea `main`
+### `ci.yml`: se corre en cada pull request (y cuando lo llama `release.yml`)
+
+No se dispara con cada `push` a una rama: los commits sueltos no gastan minutos, y lo que cuenta es el estado del pull request. Si hay un PR abierto y subís otro commit, la corrida anterior se cancela (`concurrency`).
 
 | Job | Qué verifica | Detalle |
 |---|---|---|
 | **Unitarios** (×6) | Compila (con chequeo de tipos) y corre los tests de `auth`, `restaurants`, `reservations`, `payments`, `web-bff` y `web` | Un job por paquete, en paralelo y con `fail-fast: false`: si uno falla se ve igual el estado de los demás. Usa `npm ci`, que instala exactamente lo del `package-lock.json` |
 | **Integración** (×2) | `reservations` y `payments` contra **PostgreSQL 16 y RabbitMQ reales** | Los lanza como *service containers* con los puertos y credenciales que esperan los tests |
+| **Integración del caché** | El caché de `restaurants-service` contra un **Redis real** | Prueba la invalidación, que dos instancias compartan el caché y que, si Redis se cae, el servicio siga respondiendo |
 | **Imagen** (×6) | Que cada `Dockerfile` construya | Con caché de capas: si las dependencias no cambiaron no se reinstalan |
 | **Punta a punta** | Levanta **todo** con `docker compose` (bases, RabbitMQ, 5 servicios y el front) y corre la saga de la seña a través del BFF | Es lo único que prueba la red entre contenedores y el proxy de nginx. Si falla, sube los logs de todos los contenedores |
-| **Auditoría** | `npm audit` de las dependencias de producción | Avisa pero no bloquea (`continue-on-error`): un aviso nuevo en una librería no debería frenar un cambio que no la toca |
+| **Auditoría** | `npm audit` de las dependencias de producción | **Avisa pero no bloquea**: el paso siempre termina bien, y si hay vulnerabilidades altas deja un aviso amarillo y el detalle en el resumen de la corrida. Se hizo así porque `continue-on-error` igual pinta el commit de rojo, y hoy las 14 vulnerabilidades vienen de NestJS (arreglarlas requiere migrar a su próxima versión mayor) |
 
 Los secretos de la corrida punta a punta (`JWT_SECRET`, `GATEWAY_WEBHOOK_SECRET`) se generan al azar en el mismo job y se descartan: no hay que cargar nada en GitHub para que el CI ande.
 
@@ -420,7 +497,7 @@ Para publicar una versión: `git tag v0.1.0 && git push origin v0.1.0`.
 
 ### Limitaciones conocidas
 
-- **No pude correr los workflows en GitHub** (no tengo acceso desde mi entorno). Lo que sí hice: validarlos con *actionlint* (sin errores; detecta, por ejemplo, un `needs:` que apunta a un job inexistente), y correr en una copia limpia, con `npm ci`, exactamente los mismos comandos que ejecuta cada job: build y tests de los 6 paquetes y la integración de reservations y payments, con las mismas variables que usa el CI. **No corrí el job punta a punta ni las construcciones de imágenes dentro de GitHub**: es probable que la primera corrida necesite algún ajuste; si falla, el log del job dice dónde.
+- **Los workflows ya corrieron en GitHub**: el CI quedó en verde y `release.yml` publicó las 6 imágenes en GHCR. Antes de eso los había validado con *actionlint* y corriendo los mismos comandos en una copia limpia, pero la prueba real fue esa primera corrida.
 - Las versiones de las acciones (`actions/checkout@v4`, `docker/build-push-action@v6`...) son las que conocía; Dependabot las mantiene al día.
 - **No hay etapa de deploy**: se publican imágenes, pero no se despliegan a ningún servidor (todavía no hay un destino definido).
 - **No hay lint** en el pipeline porque los paquetes no tienen ESLint configurado todavía.
@@ -494,7 +571,7 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Fase 5**: trazabilidad (`x-correlation-id`, logs JSON, Loki + Grafana)
 - [x] **Fase 6**: RabbitMQ, `payments-service` y saga de seña (idempotencia, compensaciones, DLQ)
 - [x] **Fase 7**: frontend React (React Query, Context, Redux) con tests
-- [ ] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después
+- [x] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después (front medido; los números del backend los cargás vos con `perf/`)
 - [x] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
 
 ## Estructura
@@ -505,6 +582,7 @@ reservas-platform/
 ├── docker-compose.yml
 ├── .env.example
 ├── e2e/                    # prueba de punta a punta de la saga
+├── perf/                   # pruebas de carga con k6, datos de prueba y comparador (Fase 8)
 ├── observability/          # Loki, Alloy, Grafana
 ├── .github/
 │   ├── workflows/          # ci.yml (pruebas) y release.yml (publica imágenes)

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { FilterQuery, Model, Types } from 'mongoose';
+import { CacheService } from '../cache/cache.service';
 import { RestaurantsService } from '../restaurants/restaurants.service';
 import { CreateMenuItemDto } from './dto/create-menu-item.dto';
 import { UpdateMenuItemDto } from './dto/update-menu-item.dto';
@@ -16,6 +17,7 @@ export class MenuService {
   constructor(
     @InjectModel(MenuItem.name) private readonly items: Model<MenuItemDocument>,
     private readonly restaurants: RestaurantsService,
+    private readonly cache: CacheService,
   ) {}
 
   async addItem(
@@ -24,11 +26,18 @@ export class MenuService {
     dto: CreateMenuItemDto,
   ): Promise<MenuItemDocument> {
     await this.restaurants.findOwned(restaurantId, userId);
-    return this.items.create({ ...dto, restaurantId: new Types.ObjectId(restaurantId) });
+    const created = await this.items.create({ ...dto, restaurantId: new Types.ObjectId(restaurantId) });
+    await this.cache.invalidate();
+    return created;
   }
 
   /** La carta completa, agrupada por categoría. Por defecto solo los platos disponibles. */
   async getMenu(restaurantId: string, includeUnavailable = false): Promise<MenuCategory[]> {
+    const key = CacheService.key('menu', restaurantId, includeUnavailable);
+    return this.cache.wrap(key, () => this.loadMenu(restaurantId, includeUnavailable));
+  }
+
+  private async loadMenu(restaurantId: string, includeUnavailable: boolean): Promise<MenuCategory[]> {
     await this.restaurants.findOne(restaurantId); // 404 si el restaurante no existe
 
     const filter: FilterQuery<MenuItemDocument> = {
@@ -66,6 +75,7 @@ export class MenuService {
       { new: true, runValidators: true },
     );
     if (!item) throw new NotFoundException('Plato no encontrado');
+    await this.cache.invalidate();
     return item;
   }
 
@@ -77,5 +87,6 @@ export class MenuService {
       restaurantId: new Types.ObjectId(restaurantId),
     });
     if (!deleted) throw new NotFoundException('Plato no encontrado');
+    await this.cache.invalidate();
   }
 }

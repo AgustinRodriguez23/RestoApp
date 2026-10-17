@@ -107,6 +107,37 @@ jobs:
       - name: Tests de integración
         run: npm run test:integration -w ${{ matrix.service }}
 
+    # ---------------------------------------------------------------------------
+  # Integración del caché (Fase 8): contra un Redis real, no simulado.
+  # Va aparte porque restaurants-service no usa PostgreSQL (su base es MongoDB, que sus tests no necesitan).
+  # ---------------------------------------------------------------------------
+  integration-cache:
+    name: Integración · caché Redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Tests de integración
+        run: npm run test:integration -w restaurants-service
+
+
   # ---------------------------------------------------------------------------
   # Que cada imagen Docker se pueda construir (lo que se publica en release.yml).
   # Sin push: acá solo se verifica.

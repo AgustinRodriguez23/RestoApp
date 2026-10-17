@@ -72,15 +72,38 @@ services:
     depends_on:
       mongo-restaurants:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       PORT: 3002
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Caché (Fase 8). Para medir "sin caché" levantá el servicio con RESTAURANTS_REDIS_URL vacía:
+      #   RESTAURANTS_REDIS_URL= docker compose up -d restaurants-service
+      # (el guion de ${VAR-valor} usa el valor por defecto solo si la variable NO está definida; vacía = apagado)
+      REDIS_URL: ${RESTAURANTS_REDIS_URL-redis://redis:6379}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-60}
       # Si cambiás la contraseña por una con caracteres especiales, codificala (URL-encode)
       MONGO_URI: mongodb://${RESTAURANTS_MONGO_USER:-restaurants}:${RESTAURANTS_MONGO_PASSWORD:-restaurants_password}@mongo-restaurants:27017/${RESTAURANTS_MONGO_DB:-restaurants_db}?authSource=admin
       # Mismo secreto que auth-service: así valida los JWT que ese servicio emite
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
     ports:
       - "${RESTAURANTS_PORT:-3002}:3002"
+
+  # ---------- Caché (Fase 8) ----------
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    # Es un caché, no una base de datos: sin persistencia, memoria acotada, y si se llena descarta
+    # (solo) las claves que tienen vencimiento, las menos usadas primero. La clave de versión no vence, así que nunca se descarta.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "volatile-lru"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   postgres-reservations:
     image: postgres:16-alpine
@@ -233,6 +256,22 @@ services:
       UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-3000}
     ports:
       - "${BFF_PORT:-3000}:3000"
+
+  # ---------- Pruebas de carga (Fase 8) ----------
+  # No arranca con `docker compose up`: solo cuando se lo pide el perfil "perf". Corre dentro de la red de
+  # compose, así que mide los servicios sin pasar por la red de tu máquina. Ver perf/README.md
+  k6:
+    image: grafana/k6:0.55.0
+    profiles: ["perf"]
+    user: root # para poder escribir los resultados en ./perf/results (carpeta de tu máquina)
+    environment:
+      BASE_URL: http://web-bff:3000
+      RATE: ${RATE:-100}
+      DURATION: ${DURATION:-30s}
+      WARMUP: ${WARMUP:-10s}
+    volumes:
+      - ./perf:/perf
+    entrypoint: ["k6"]
 
   # ---------- Observabilidad: logs centralizados ----------
   loki:

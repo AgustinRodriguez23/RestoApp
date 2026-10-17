@@ -47,6 +47,12 @@ export interface MenuItem {
   available: boolean;
 }
 
+/** Así devuelve la carta restaurants-service: agrupada por categoría (no una lista plana de platos). */
+export interface MenuCategory {
+  category: string;
+  items: MenuItem[];
+}
+
 export interface AvailabilitySlot {
   startsAt: string;
   endsAt: string;
@@ -69,7 +75,7 @@ export interface Warning {
 
 export interface RestaurantOverview {
   restaurant: Restaurant;
-  menu: MenuItem[] | null;
+  menu: MenuCategory[] | null;
   availability: Availability | null;
   warnings: Warning[];
 }

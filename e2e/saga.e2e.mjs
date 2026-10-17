@@ -123,6 +123,40 @@ async function main() {
     http('POST', `${BFF}/reservations/${id}/pay`, { token, headers: { 'idempotency-key': key }, body: { token: tok } });
   const waitStatus = (id, status, token = customer) => waitFor(`reserva ${id} → ${status}`, async () => (await reservation(id, token)).status === status);
 
+  // ------------------------------------------------------------------ 0
+  // Contrato entre servicios: el front depende de la FORMA de lo que devuelve el BFF, y los tests unitarios
+  // de cada pieza simulan a las otras. Esto es lo único que prueba que coinciden de verdad.
+  // También comprueba que el caché (Fase 8) nunca devuelve datos viejos tras una modificación.
+  if (!process.env.E2E_RESTAURANT_ID) {
+    section('0. La carta y el caché: forma de la respuesta y datos siempre frescos');
+    const overview = () => http('GET', `${BFF}/restaurants/${restaurantId}/overview`);
+    const addDish = (name) =>
+      http('POST', `${RESTAURANTS}/restaurants/${restaurantId}/menu-items`, {
+        token: owner,
+        body: { category: 'Postres', name, priceCents: 450000, allergens: ['LACTOSE'] },
+      });
+
+    check('agregar un plato responde 201', (await addDish('Flan casero')).status === 201);
+    const first = await overview();
+    const menu = first.body.menu;
+    check(
+      'la carta llega AGRUPADA por categoría: [{ category, items: [...] }] (así la lee el front)',
+      Array.isArray(menu) && menu[0]?.category === 'Postres' && Array.isArray(menu[0]?.items) && menu[0].items[0]?.name === 'Flan casero',
+      JSON.stringify(menu),
+    );
+    check('cada plato trae allergens como lista (el front la recorre)', Array.isArray(menu?.[0]?.items?.[0]?.allergens));
+
+    await overview(); // segunda lectura: sale del caché si está activo
+    await addDish('Panqueque con dulce de leche');
+    const afterAdd = JSON.stringify((await overview()).body.menu);
+    check('tras agregar un plato, la carta ya lo incluye (el caché se invalida)', afterAdd.includes('Panqueque con dulce de leche'), afterAdd);
+
+    const renamed = `E2E Resto ${RUN} (renombrado)`;
+    const patch = await http('PATCH', `${RESTAURANTS}/restaurants/${restaurantId}`, { token: owner, body: { name: renamed } });
+    check('modificar el restaurante responde 200', patch.status === 200, String(patch.status));
+    check('tras modificarlo, el BFF muestra el nombre nuevo enseguida (sin esperar el TTL)', (await overview()).body.restaurant?.name === renamed);
+  }
+
   // ------------------------------------------------------------------ 1
   section('1. Camino feliz: reservar → pagar → reserva confirmada');
   {
