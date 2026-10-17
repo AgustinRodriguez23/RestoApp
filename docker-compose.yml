@@ -264,6 +264,7 @@ services:
     image: grafana/k6:0.55.0
     profiles: ["perf"]
     user: root # para poder escribir los resultados en ./perf/results (carpeta de tu máquina)
+    working_dir: /perf
     environment:
       BASE_URL: http://web-bff:3000
       RATE: ${RATE:-100}

@@ -2,7 +2,7 @@
 
 Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida como **arquitectura de microservicios**. Es un proyecto de práctica pensado para demostrar patrones reales: BFF, comunicación asíncrona con eventos, trazabilidad de logs, tests, Docker y CI/CD.
 
-> Estado: **Fases 1 a 9 completas** (la 8, de performance, con las mediciones del front hechas y el kit para medir el backend en tu máquina). Quedan los pendientes de la hoja de ruta.
+> Estado: **Fases 1 a 9 completas** (la 8, de performance, con mediciones del front y del backend). Quedan los pendientes de la hoja de ruta.
 
 ## Arquitectura objetivo
 
@@ -383,7 +383,7 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 
 ## Fase 8: performance (Redis, k6, Lighthouse)
 
-La regla de esta fase: **no se optimiza nada sin medir antes y después**. Se midió el front con Lighthouse (resultados abajo) y se dejó armado todo para medir el backend con k6 en tu máquina (`perf/README.md`).
+La regla de esta fase: **no se optimiza nada sin medir antes y después**. Se midió el front con Lighthouse y el backend con k6 (resultados abajo; el kit para repetirlo está en `perf/README.md`).
 
 ### Caché de lecturas con Redis (`restaurants-service/src/cache`)
 
@@ -432,15 +432,39 @@ Qué lo causó, en orden de impacto (cada cambio se midió por separado):
 2. **`robots.txt` y `meta description`**: SEO 82 → 100. Sin `robots.txt`, nginx devolvía `index.html` (el comodín de la app de una sola página) y los buscadores lo leían como reglas inválidas.
 3. **Probado y descartado: dividir el código por rutas** (`React.lazy`). Ahorraba unos 5 KB comprimidos en la carga inicial y no se notó en las medidas: las pantallas pesan muy poco, el grueso del bundle son las librerías (React). No justificaba la complejidad extra (más pedidos, estados de carga, tests más complicados).
 
-### Resultados del backend (k6): para completar con tus números
+### Resultados del backend (k6)
 
-Seguí `perf/README.md` (seed → medir sin caché → medir con caché → `node perf/compare.mjs`) y pegá acá la tabla que imprime:
+Medido en una PC con Windows y Docker Desktop, con **todo en la misma máquina** (servicios, bases, Redis y el propio k6), 150 restaurantes con 30 platos cada uno y una corrida por caso (10 s de calentamiento + 30 s medidos). El tráfico simula gente navegando: 45 % listados, 45 % pantalla de un restaurante, 10 % búsquedas por texto.
+
+**1. Capacidad: 100 pedidos por segundo.** Sin caché el sistema se satura; con caché aguanta.
+
+| | Sin caché | Con caché |
+|---|---:|---:|
+| Pedidos fallidos | 7,8 % | **0 %** |
+| Mediana (p50) de todos los pedidos | 496 ms | **6,9 ms** |
+| p95 de todos los pedidos | 6.138 ms | **28 ms** |
+| Pedidos que k6 no llegó a iniciar | 322 | 44 |
+
+Los ~6 s del «antes» coinciden con el BFF esperando 3 s a `restaurants-service` y reintentando una vez: los pedidos fallidos son timeouts por saturación. Con caché la mayoría de las lecturas ni llega a MongoDB, y esa carga que se evita también alivia a las búsquedas (que no usan el caché): por eso en esta tabla la búsqueda también mejora. **A esta carga la búsqueda deja de ser un control limpio.**
+
+**2. Latencia con carga baja: 30 pedidos por segundo** (ninguno de los dos modos se satura, así que la comparación es justa).
 
 | Pedido | p50 antes | p50 después | p95 antes | p95 después | Cambio p95 |
 |---|---:|---:|---:|---:|---:|
-| Listado (cacheado) | — | — | — | — | — |
-| Pantalla de restaurante (cacheado) | — | — | — | — | — |
-| Búsqueda por texto (NO cacheado, control) | — | — | — | — | — |
+| Listado (cacheado) | 9,0 ms | 5,8 ms | 17,6 ms | 10,0 ms | -43 % |
+| Pantalla de restaurante (cacheado) | 14,4 ms | 7,7 ms | 24,3 ms | 21,3 ms | -12 % |
+| Búsqueda por texto (**no** cacheado, control) | 9,5 ms | 10,0 ms | 19,3 ms | 17,6 ms | -9 % |
+| Todos juntos | 12,2 ms | 7,0 ms | 22,2 ms | 18,4 ms | -17 % |
+
+Cómo leerlo:
+
+- **La mejora de latencia con poca carga es real pero chica**: la mediana del listado y de la pantalla de restaurante baja entre un 35 % y un 47 %, o sea unos 3 a 7 ms. Con pocos datos y MongoDB en la misma máquina, la base ya responde en pocos milisegundos y no hay mucho que ahorrar.
+- **La búsqueda (que no usa caché) casi no se movió** (+5 % en la mediana, -9 % en el p95): esa diferencia es el nivel de ruido de la medición. Por eso las diferencias de p95 de ese tamaño (como el -12 % de la pantalla de restaurante) no se pueden distinguir de la suerte; las medianas sí.
+- **Donde el caché pesa de verdad es en la capacidad**: pasar de 7,8 % de errores y 6 s de espera a 0 % de errores y 28 ms a 100 pedidos por segundo.
+
+**3. Qué dijo Redis** (`keyspace_hits` 13.604, `keyspace_misses` 714). Ojo con este número: cada lectura consulta Redis **dos veces** (primero la versión del caché y después el dato), así que la tasa de aciertos de 95 % que sale de esa cuenta está inflada. Contando solo los datos, es de alrededor de 90 %. Los ~700 fallos son esperables: unas 330 claves distintas (150 detalles, 150 cartas y las páginas del listado) que hubo que cargar al empezar y volver a cargar cuando vencieron a los 60 s.
+
+**Salvedades**: una sola corrida por caso (no se repitió para medir la variación entre corridas en esta máquina); k6 comparte CPU con los servicios, y aun con caché a 100 pedidos por segundo quedaron 44 sin iniciar, así que ese es más o menos el techo de esta PC; el tráfico repite pocas páginas, un mejor caso que el real (con miles de restaurantes la tasa de aciertos sería menor).
 
 ### Un bug real que apareció al medir
 
@@ -448,8 +472,7 @@ Al correr Lighthouse sobre la pantalla de un restaurante con carta, la consola d
 
 ### Limitaciones conocidas
 
-- **No pude medir el backend**: mi entorno no tiene MongoDB ni Docker. Verifiqué la lógica del caché con Redis real y modelos simulados, y que los scripts de k6 corren contra un stack simulado, pero **los tiempos del antes/después del backend no están medidos**: hay que correr `perf/`.
-- Los números de Lighthouse son de un entorno simulado (CPU y red *throttled* por software), útiles para comparar entre sí, no como valores absolutos.
+- **Las mediciones del backend son de una sola máquina y una sola corrida por caso** (ver las salvedades arriba); los números absolutos no se pueden extrapolar a otro entorno. Los de Lighthouse son de un entorno simulado.
 - El caché es invalidación global: cualquier escritura descarta todo. Es correcto y simple porque se edita muy poco comparado con lo que se lee; con un panel de dueños muy activo habría que invalidar por restaurante.
 - La página sigue renderizándose en el navegador (SPA): el contenido aparece después de bajar el JS y pedir los datos. Mejorarlo más exigiría renderizado en el servidor o prerenderizado, que es otro proyecto.
 - No hay caché en el BFF ni en el navegador para las llamadas a la API (por ejemplo, `Cache-Control`/ETag). Es el siguiente paso natural si la medición muestra que hace falta.
@@ -571,7 +594,7 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Fase 5**: trazabilidad (`x-correlation-id`, logs JSON, Loki + Grafana)
 - [x] **Fase 6**: RabbitMQ, `payments-service` y saga de seña (idempotencia, compensaciones, DLQ)
 - [x] **Fase 7**: frontend React (React Query, Context, Redux) con tests
-- [x] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después (front medido; los números del backend los cargás vos con `perf/`)
+- [x] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después (front y backend medidos)
 - [x] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
 
 ## Estructura
