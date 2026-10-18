@@ -1,5 +1,5 @@
 # ---- Etapa 1: build ----
-FROM node:20-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 COPY package.json ./
 RUN npm install
@@ -8,7 +8,7 @@ COPY src ./src
 RUN npm run build
 
 # ---- Etapa 2: imagen final (solo dependencias de producción) ----
-FROM node:20-alpine AS runtime
+FROM node:25-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json ./
