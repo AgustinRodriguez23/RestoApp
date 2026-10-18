@@ -36,6 +36,28 @@ export interface Restaurant {
   tables: { number: number; capacity: number }[];
 }
 
+/** Lo que se manda para crear o modificar un restaurante. */
+export interface RestaurantInput {
+  name: string;
+  description?: string;
+  cuisine: string;
+  address: string;
+  phone?: string;
+  openingHours: OpeningHours[];
+  tables: { number: number; capacity: number }[];
+}
+
+/** Lo que se manda para crear o modificar un plato (el precio y las diferencias, en centavos). */
+export interface MenuItemInput {
+  category: string;
+  name: string;
+  description?: string;
+  priceCents: number;
+  allergens: string[];
+  variants: { name: string; priceDeltaCents: number }[];
+  available: boolean;
+}
+
 export interface MenuItem {
   id?: string;
   category: string;

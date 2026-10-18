@@ -706,6 +706,139 @@ describe('web-bff (HTTP + servicios falsos)', () => {
     });
   });
 
+  describe('gestión de restaurantes del dueño', () => {
+    const asOwner = () => `Bearer ${jwt.sign({ sub: 'owner-1', email: 'o@example.com', role: 'RESTAURANT_OWNER' })}`;
+    const valid = {
+      name: 'La Parrilla',
+      cuisine: 'Parrilla',
+      address: 'Av. Mitre 1234',
+      openingHours: [{ dayOfWeek: 5, opens: '20:00', closes: '01:00' }],
+      tables: [{ number: 1, capacity: 4 }],
+    };
+
+    it('crea un restaurante reenviando el cuerpo y el token', async () => {
+      restaurants.handler = () => ({ status: 201, body: { id: RID, ...valid } });
+
+      const res = await server().post('/owner/restaurants').set('Authorization', asOwner()).send(valid).expect(201);
+
+      expect(res.body.id).toBe(RID);
+      expect(restaurants.calls[0]).toMatchObject({ method: 'POST', path: '/restaurants', body: valid });
+      expect(restaurants.calls[0].headers.authorization).toBe(asOwner());
+    });
+
+    it('rechaza sin llamar al servicio: sin mesas, hora inválida o campos de más', async () => {
+      const post = (body: object) => server().post('/owner/restaurants').set('Authorization', asOwner()).send(body).expect(400);
+      await post({ ...valid, tables: [] });
+      await post({ ...valid, openingHours: [{ dayOfWeek: 5, opens: '25:00', closes: '01:00' }] });
+      await post({ ...valid, ownerId: 'otro' }); // el dueño sale del token, nunca del cuerpo
+      expect(restaurants.calls).toHaveLength(0);
+    });
+
+    it('sin token responde 401', async () => {
+      await server().post('/owner/restaurants').send(valid).expect(401);
+    });
+
+    it('un cliente recibe el 403 de restaurants-service', async () => {
+      restaurants.handler = () => fail(403, 'Requiere rol RESTAURANT_OWNER');
+      await server().post('/owner/restaurants').set('Authorization', authz()).send(valid).expect(403);
+    });
+
+    it('modifica solo los campos enviados', async () => {
+      restaurants.handler = () => ok({ id: RID, ...valid, name: 'Nuevo' });
+
+      await server().patch(`/owner/restaurants/${RID}`).set('Authorization', asOwner()).send({ name: 'Nuevo' }).expect(200);
+
+      expect(restaurants.calls[0]).toMatchObject({ method: 'PATCH', path: `/restaurants/${RID}`, body: { name: 'Nuevo' } });
+    });
+
+    it('propaga el 400 de una regla de negocio (mesas repetidas)', async () => {
+      restaurants.handler = () => fail(400, 'Hay números de mesa repetidos');
+      const res = await server().patch(`/owner/restaurants/${RID}`).set('Authorization', asOwner()).send({ tables: [{ number: 1, capacity: 2 }, { number: 1, capacity: 4 }] }).expect(400);
+      expect(res.body.message).toMatch(/repetidos/);
+    });
+
+    it('un dueño ajeno recibe el 403 al modificar o borrar', async () => {
+      restaurants.handler = () => fail(403, 'No sos el dueño de este restaurante');
+      await server().patch(`/owner/restaurants/${RID}`).set('Authorization', asOwner()).send({ name: 'Otro nombre' }).expect(403);
+      await server().delete(`/owner/restaurants/${RID}`).set('Authorization', asOwner()).expect(403);
+    });
+
+    it('borra con 204 y sin cuerpo', async () => {
+      restaurants.handler = () => ({ status: 204 });
+
+      const res = await server().delete(`/owner/restaurants/${RID}`).set('Authorization', asOwner()).expect(204);
+
+      expect(res.text).toBe('');
+      expect(restaurants.calls[0]).toMatchObject({ method: 'DELETE', path: `/restaurants/${RID}` });
+    });
+
+    it('rechaza un id con formato inválido', async () => {
+      await server().delete('/owner/restaurants/no-es-id').set('Authorization', asOwner()).expect(400);
+      expect(restaurants.calls).toHaveLength(0);
+    });
+  });
+
+  describe('carta del dueño', () => {
+    const asOwner = () => `Bearer ${jwt.sign({ sub: 'owner-1', email: 'o@example.com', role: 'RESTAURANT_OWNER' })}`;
+    const ITEM = '64b7f0c2a1b2c3d4e5f60999';
+    const dish = { category: 'Postres', name: 'Flan casero', priceCents: 450000, allergens: ['MILK', 'EGGS'], variants: [{ name: 'Con crema', priceDeltaCents: 50000 }] };
+
+    it('lista la carta pidiendo también los platos no disponibles', async () => {
+      restaurants.handler = () => ok([{ category: 'Postres', items: [{ id: ITEM, name: 'Flan', available: false }] }]);
+
+      const res = await server().get(`/owner/restaurants/${RID}/menu`).set('Authorization', asOwner()).expect(200);
+
+      expect(res.body[0].items[0].available).toBe(false);
+      expect(restaurants.calls[0].path).toBe(`/restaurants/${RID}/menu?includeUnavailable=true`);
+    });
+
+    it('agrega un plato reenviando el cuerpo y el token', async () => {
+      restaurants.handler = () => ({ status: 201, body: { id: ITEM, ...dish } });
+
+      await server().post(`/owner/restaurants/${RID}/menu-items`).set('Authorization', asOwner()).send(dish).expect(201);
+
+      expect(restaurants.calls[0]).toMatchObject({ method: 'POST', path: `/restaurants/${RID}/menu-items`, body: dish });
+      expect(restaurants.calls[0].headers.authorization).toBe(asOwner());
+    });
+
+    it('rechaza sin llamar al servicio: alérgeno inventado, precio decimal o repetidos', async () => {
+      const post = (body: object) => server().post(`/owner/restaurants/${RID}/menu-items`).set('Authorization', asOwner()).send(body).expect(400);
+      await post({ ...dish, allergens: ['LACTOSE'] });
+      await post({ ...dish, priceCents: 4500.5 });
+      await post({ ...dish, allergens: ['MILK', 'MILK'] });
+      await post({ ...dish, priceCents: -1 });
+      expect(restaurants.calls).toHaveLength(0);
+    });
+
+    it('pausar un plato es un PATCH con available: false', async () => {
+      restaurants.handler = () => ok({ id: ITEM, available: false });
+
+      await server().patch(`/owner/restaurants/${RID}/menu-items/${ITEM}`).set('Authorization', asOwner()).send({ available: false }).expect(200);
+
+      expect(restaurants.calls[0]).toMatchObject({ method: 'PATCH', path: `/restaurants/${RID}/menu-items/${ITEM}`, body: { available: false } });
+    });
+
+    it('un dueño ajeno recibe el 403 del servicio', async () => {
+      restaurants.handler = () => fail(403, 'No sos el dueño de este restaurante');
+      await server().post(`/owner/restaurants/${RID}/menu-items`).set('Authorization', asOwner()).send(dish).expect(403);
+      await server().delete(`/owner/restaurants/${RID}/menu-items/${ITEM}`).set('Authorization', asOwner()).expect(403);
+    });
+
+    it('quita un plato con 204', async () => {
+      restaurants.handler = () => ({ status: 204 });
+      const res = await server().delete(`/owner/restaurants/${RID}/menu-items/${ITEM}`).set('Authorization', asOwner()).expect(204);
+      expect(res.text).toBe('');
+      expect(restaurants.calls[0]).toMatchObject({ method: 'DELETE', path: `/restaurants/${RID}/menu-items/${ITEM}` });
+    });
+
+    it('valida los ids y exige sesión', async () => {
+      await server().get('/owner/restaurants/no-es-id/menu').set('Authorization', asOwner()).expect(400);
+      await server().delete(`/owner/restaurants/${RID}/menu-items/no-es-id`).set('Authorization', asOwner()).expect(400);
+      await server().get(`/owner/restaurants/${RID}/menu`).expect(401);
+      expect(restaurants.calls).toHaveLength(0);
+    });
+  });
+
   describe('trazabilidad de logs', () => {
     type Line = Record<string, unknown>;
     let lines: Line[];
@@ -871,6 +1004,10 @@ describe('web-bff (HTTP + servicios falsos)', () => {
           '/me/overview',
           '/owner/reservations/{id}/status',
           '/owner/restaurants',
+          '/owner/restaurants/{id}',
+          '/owner/restaurants/{restaurantId}/menu',
+          '/owner/restaurants/{restaurantId}/menu-items',
+          '/owner/restaurants/{restaurantId}/menu-items/{itemId}',
           '/owner/restaurants/{id}/reservations',
           '/reservations',
           '/reservations/mine',

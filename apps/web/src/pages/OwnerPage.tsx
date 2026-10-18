@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMyRestaurants, useOwnerCancel, useOwnerReservations, useSetReservationStatus } from '../api/hooks';
 import type { OwnerReservation, ReservationStatus } from '../api/types';
 import { ReservationBadge } from '../components/StatusBadge';
@@ -6,6 +7,8 @@ import { Button, EmptyState, ErrorNotice, Field, inputClass, Spinner } from '../
 import { dateInputValue, formatMoney, formatTime } from '../lib/format';
 import { useAppDispatch } from '../store';
 import { toastActions } from '../store/toastSlice';
+
+const linkButton = 'inline-flex min-h-11 items-center rounded-lg bg-sifon px-4 text-sm font-semibold text-white hover:bg-sifon-dark';
 
 const FILTERS: { value: ReservationStatus | ''; label: string }[] = [
   { value: '', label: 'Todas' },
@@ -112,7 +115,12 @@ export function OwnerPage() {
 
   return (
     <div className="grid gap-6">
-      <h1 className="text-3xl font-bold">Panel del local</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-3xl font-bold">Panel del local</h1>
+        <Link to="/panel/restaurantes/nuevo" className={linkButton}>
+          Nuevo restaurante
+        </Link>
+      </div>
 
       {restaurants.isPending && (
         <div className="flex items-center gap-3 text-muted">
@@ -122,7 +130,10 @@ export function OwnerPage() {
       {restaurants.error && <ErrorNotice error={restaurants.error} onRetry={() => void restaurants.refetch()} title="No pudimos cargar tus restaurantes" />}
       {restaurants.data && list.length === 0 && (
         <EmptyState title="Todavía no tenés ningún restaurante">
-          <p className="text-sm text-muted">Cuando tengas uno, vas a ver acá las reservas de cada día.</p>
+          <p className="text-sm text-muted">Creá el primero y vas a ver acá las reservas de cada día.</p>
+          <Link to="/panel/restaurantes/nuevo" className={linkButton}>
+            Crear mi restaurante
+          </Link>
         </EmptyState>
       )}
 
@@ -144,7 +155,19 @@ export function OwnerPage() {
               <input type="date" className={inputClass} value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
             </Field>
           </div>
-          {list.length === 1 && <p className="-mt-3 text-sm text-muted">{list[0]?.name}</p>}
+          <p className="-mt-3 text-sm">
+            {list.length === 1 && <span className="mr-3 text-muted">{list[0]?.name}</span>}
+            {restaurantId && (
+              <Link to={`/panel/restaurantes/${restaurantId}`} className="font-semibold text-sifon-dark underline">
+                Editar datos, mesas y horarios
+              </Link>
+            )}
+            {restaurantId && (
+              <Link to={`/panel/restaurantes/${restaurantId}/carta`} className="ml-4 font-semibold text-sifon-dark underline">
+                Editar la carta
+              </Link>
+            )}
+          </p>
 
           <div role="group" aria-label="Filtrar por estado" className="flex flex-wrap gap-2">
             {FILTERS.map((filter) => (

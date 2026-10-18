@@ -40,7 +40,8 @@ export function mockApi(routes: Record<string, Handler>) {
     const handler = routes[`${method} ${path}`];
     if (!handler) return new Response(JSON.stringify({ message: `sin ruta ${method} ${path}` }), { status: 404 });
     const reply = typeof handler === 'function' ? handler(call) : handler;
-    return new Response(JSON.stringify(reply.body ?? null), {
+    // Una respuesta 204 no puede traer cuerpo (el constructor de Response lo prohíbe)
+    return new Response(reply.status === 204 ? null : JSON.stringify(reply.body ?? null), {
       status: reply.status ?? 200,
       headers: { 'content-type': 'application/json', ...reply.headers },
     });

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { allergenLabel, dateInputValue, formatDay, formatMoney, formatTime, newIdempotencyKey, remaining } from './format';
 
 describe('format', () => {
-  it('formatMoney convierte centavos a pesos sin decimales', () => {
+  it('formatMoney muestra los centavos solo cuando existen (no redondea un precio con centavos)', () => {
+    expect(formatMoney(450050)).toMatch(/4\.500,50/);
+    expect(formatMoney(450000)).not.toMatch(/,/);
+    expect(formatMoney(1999)).toMatch(/19,99/);
     expect(formatMoney(400000)).toMatch(/4\.000/);
     expect(formatMoney(850000)).toMatch(/8\.500/);
   });

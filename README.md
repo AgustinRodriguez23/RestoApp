@@ -224,6 +224,11 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 | GET | `/reservations/:id/payment` | Estado del pago de la seña |
 | GET | `/me/overview` | **Agregada**: mi perfil + mis próximas 5 reservas + las que esperan el pago |
 | GET | `/owner/restaurants` | **Dueño**: mis restaurantes |
+| POST | `/owner/restaurants` | **Dueño**: crea un restaurante (el dueño es el del token, nunca el del cuerpo) |
+| PATCH, DELETE | `/owner/restaurants/:id` | **Dueño**: edita datos, mesas y horarios / elimina el restaurante y su carta |
+| GET | `/owner/restaurants/:id/menu` | **Dueño**: su carta completa, **incluyendo los platos pausados** |
+| POST | `/owner/restaurants/:id/menu-items` | **Dueño**: agrega un plato |
+| PATCH, DELETE | `/owner/restaurants/:id/menu-items/:itemId` | **Dueño**: edita, pausa (`available: false`) o quita un plato |
 | GET | `/owner/restaurants/:id/reservations` | **Dueño**: reservas del local (`date`, `status`, `page`, `limit`) |
 | PATCH | `/owner/reservations/:id/status` | **Dueño**: `COMPLETED` (asistió) o `NO_SHOW` (no vino). Para cancelar se usa `POST /reservations/:id/cancel`, que ya acepta al dueño |
 | GET | `/health` | Estado del BFF y de cada servicio (`ok` / `degraded`) |
@@ -241,7 +246,7 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 ### Limitaciones conocidas
 
 - Sin caché propio: `/reservations/mine` consulta restaurants-service en cada llamada (desde la Fase 8 ese servicio responde desde Redis; ver «Fase 8»).
-- Del dueño solo están las reservas del local (ver «Panel del dueño»); crear restaurantes, mesas y carta se sigue haciendo desde el Swagger de restaurants-service.
+- Del dueño están las reservas del local, la gestión del restaurante (mesas y horarios) y su carta (ver «Panel del dueño»).
 - Los DTOs de entrada están duplicados respecto de cada servicio; si cambian allá hay que actualizarlos acá.
 
 ## Fase 6: mensajería y pagos
@@ -356,6 +361,8 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 | `/reservas/:id/pagar` | Paga la seña con los medios de prueba de la pasarela simulada; muestra el tiempo que queda de mesa retenida |
 | `/reservas` | Mis reservas con filtro por estado, pago de la seña y cancelación con confirmación |
 | `/panel` | **Dueño**: reservas del local por día y estado, «Asistió» / «No vino» y cancelar (ver «Panel del dueño») |
+| `/panel/restaurantes/nuevo`, `/panel/restaurantes/:id` | **Dueño**: crear / editar / eliminar un restaurante con sus mesas y horarios |
+| `/panel/restaurantes/:id/carta` | **Dueño**: agregar, editar, pausar y quitar platos (precio, alérgenos, variantes) |
 
 ### Dónde vive cada tipo de estado (y por qué)
 
@@ -379,7 +386,7 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 
 ### Limitaciones conocidas
 
-- **El panel del dueño solo cubre las reservas del local** (ver «Panel del dueño»): crear restaurantes, editar mesas y carta, y el resumen del día se siguen haciendo desde el Swagger.
+- **El panel del dueño cubre reservas, restaurante y carta** (ver «Panel del dueño»); el resumen del día todavía no existe.
 - El **token se guarda en `localStorage`**: sobrevive al F5 pero un script malicioso (XSS) podría leerlo. Lo más seguro sería que el BFF lo entregue en una cookie `httpOnly`.
 - Los **tests** cubren la lógica y las pantallas con un servidor falso (`fetch` simulado); no hay todavía pruebas con un navegador real contra el stack (lo recorrí a mano con Playwright, pero ese script no está en el repo).
 - Sin Docker en mi entorno de desarrollo no pude probar la imagen `web` ni la configuración de nginx; sí probé el build de la imagen paso a paso (instalación aislada + `npm run build`) y el frontend contra los servicios reales con `npm run dev`.
@@ -387,7 +394,7 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 
 ## Panel del dueño (`/panel`)
 
-El dueño de un restaurante ve las reservas de su local, marca si el cliente fue y puede cancelar. Alcance deliberadamente acotado: **solo reservas** (no crea ni edita restaurantes, mesas o carta, ni hay resumen del día).
+El dueño de un restaurante ve las reservas de su local, marca si el cliente fue, puede cancelar y **crea, edita y elimina sus restaurantes** (datos, mesas y horarios) y **administra su carta**. Alcance deliberadamente acotado: no incluye un resumen del día.
 
 | Pieza | Qué se agregó |
 |---|---|
@@ -395,7 +402,9 @@ El dueño de un restaurante ve las reservas de su local, marca si el cliente fue
 | reservations-service | Columna `customer_name` (nullable), copiada del token al reservar y devuelta en la API |
 | restaurants-service | `GET /restaurants/mine` (rol `RESTAURANT_OWNER`, sin caché, ordenado por nombre) |
 | web-bff | Módulo `owner`: `GET /owner/restaurants`, `GET /owner/restaurants/:id/reservations`, `PATCH /owner/reservations/:id/status` |
-| apps/web | Ruta `/panel` (con `RequireOwner`), link «Panel del local» solo para dueños |
+| web-bff (carta) | `GET /owner/restaurants/:id/menu` (con los pausados), `POST` y `PATCH`/`DELETE …/menu-items/:itemId` |
+| web-bff (gestión) | `POST /owner/restaurants`, `PATCH` y `DELETE /owner/restaurants/:id`: validan la forma del cuerpo (mismas reglas que el servicio) y reenvían |
+| apps/web | `/panel` (con `RequireOwner`), link «Panel del local» solo para dueños, y el formulario de restaurante en `/panel/restaurantes/nuevo` y `/panel/restaurantes/:id` |
 
 ### Qué se puede hacer según el momento de la reserva
 
@@ -416,16 +425,37 @@ Esas reglas las impone reservations-service (`cancel` falla si ya comenzó; `sta
 - **`/restaurants/mine` va antes que `/restaurants/:id`** en el controlador; si no, Nest interpretaría «mine» como un id.
 - **Cancelar reutiliza `POST /reservations/:id/cancel`**: ese endpoint ya aceptaba al dueño, y el evento ya marca `CANCELLED_BY_OWNER` con devolución de la seña.
 
+### Gestión del restaurante: decisiones
+
+- **Los cambios sobre mesas y horarios no revalidan las reservas existentes.** Es el comportamiento del backend; el formulario lo avisa en pantalla al editar. Bloquear el cambio si hay reservas futuras afectadas exigiría que restaurants-service consulte a reservations-service (una dependencia nueva entre servicios) y quedó fuera.
+- **Eliminar no cancela las reservas.** Se borra el restaurante y su carta; las reservas quedan apuntando a un restaurante que ya no existe. La confirmación lo dice y pide cancelar antes las vigentes desde el panel.
+- **Validación en tres capas**: el formulario avisa al instante (`lib/restaurantForm.ts`, mismas reglas que el servidor), el BFF rechaza la forma inválida sin molestar al servicio, y restaurants-service decide lo que depende de los datos (mesas repetidas, quién es el dueño).
+- **Todo el formulario es texto hasta enviarlo**: los campos numéricos se convierten recién al enviar, así que se puede borrar y reescribir un número sin que salte a `0`.
+- **Mutaciones que refrescan lo correcto**: tras crear, editar o eliminar se invalidan mi lista, el listado público y el detalle, y en el servidor el caché de Redis se invalida solo (Fase 8).
+- El teléfono vacío **no se envía** (el servidor lo rechaza por formato), así que una vez cargado no se puede dejar en blanco desde la pantalla.
+
+### La carta: decisiones
+
+- **Los precios se escriben en pesos y viajan en centavos enteros.** El formulario acepta coma o punto (`4500,50`) y convierte con redondeo (`19,99` × 100 da `1998,999…` en coma flotante; se redondea a `1999`). Un monto inválido o con más de dos decimales se rechaza antes de enviarlo (`lib/menuForm.ts`). Editar un plato y guardarlo sin tocar nada **no cambia** su precio (hay un test).
+- **Pausar no es borrar**: un plato pausado (`available: false`) desaparece de la carta pública pero el dueño lo sigue viendo, marcado, y lo reactiva con un clic. Mandar solo `available` evita pisar el resto de los datos.
+- **Alérgenos como casillas** (los 14 códigos del servidor, mostrados en español) y **variantes** con diferencia de precio, que puede ser negativa.
+- **Categorías libres con sugerencias**: se escribe la categoría y se sugieren las que ya existen (`datalist`), así no aparece «Postres» y «postres» por un descuido.
+- **El caché no sirve cartas viejas**: cada cambio invalida la carta de Redis (Fase 8) y el front refresca la del dueño y el detalle público. El e2e lo comprueba: se pausa un plato y desaparece de la carta pública al instante.
+- **Arreglo de paso**: `formatMoney` redondeaba a pesos enteros, así que un plato de `$ 4.500,50` se mostraba como `$ 4.501`. Ahora muestra los centavos solo si existen (`$ 4.500` o `$ 4.500,50`). Afecta también la carta pública y las señas.
+
 ### Cómo se probó
 
-- Tests unitarios y HTTP en los cuatro servicios y 8 tests de pantalla (`OwnerPage.spec.tsx`: acceso por rol, filtros, marcar asistencia, cancelar con confirmación, error del servidor, paginación).
+- Tests unitarios y HTTP en los cuatro servicios, 8 tests de pantalla (`OwnerPage.spec.tsx`: acceso por rol, filtros, marcar asistencia, cancelar con confirmación, error del servidor, paginación).
 - La integración de reservations-service (Postgres y RabbitMQ reales) verifica que `customerName` se guarda desde el token.
-- La prueba de punta a punta tiene una sección nueva («8. Panel del dueño»): lista, nombre del cliente, filtro por día, dueño ajeno, marcar antes de hora (400), cancelar.
+- La prueba de punta a punta tiene dos secciones nuevas: «8. Panel del dueño» (lista, nombre del cliente, filtro por día, dueño ajeno, marcar antes de hora, cancelar) y «9. Gestión de restaurantes» (crear, editar, ver el cambio al instante pese al caché, dueño ajeno, eliminar).
+- 19 tests más de pantalla y de reglas del formulario de restaurante (alta, errores, mesas repetidas, edición, baja con confirmación) y 18 de la carta (conversión de precios, validación, alta, edición, pausa, baja y errores).
+- La prueba de punta a punta suma «10. Carta del dueño»: alta, validación (alérgeno inventado, precio con decimales), dueño ajeno, pausa y reactivación con la carta pública al día, baja.
 - Recorrido en un navegador real con Playwright contra el stack (con un restaurants-service simulado, sin MongoDB real): sin errores de consola.
 
 ### Limitaciones conocidas
 
-- Un dueño **sin restaurantes** no tiene cómo crear uno desde la pantalla: ve un aviso.
+- **El endpoint público de la carta acepta `?includeUnavailable=true` sin autenticación** (así lo definió restaurants-service), por lo que quien conozca el parámetro puede ver los platos pausados. No son datos sensibles, pero conviene restringirlo si se pausan por un motivo interno.
+- La carta no tiene **orden manual**: se ordena por categoría y nombre. Tampoco hay fotos de los platos.
 - El selector de restaurante aparece solo si hay más de uno; con dos locales de igual nombre no se distinguen.
 - No hay filtros por rango de fechas ni por nombre del cliente; el listado es por **un día**.
 - Las reservas de varios locales no se juntan en una sola vista.

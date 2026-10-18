@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../lib/api';
-import type { CreateReservationInput, OwnerReservation, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
+import type { CreateReservationInput, MenuCategory, MenuItemInput, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
 
 /**
  * Todo el estado que vive en el servidor pasa por React Query: caché, reintentos, "cargando" y
@@ -162,5 +162,85 @@ export function useOwnerCancel() {
       void queryClient.invalidateQueries({ queryKey: ['owner', 'reservations'] });
       void queryClient.invalidateQueries({ queryKey: ['overview'] }); // la mesa vuelve a estar libre
     },
+  });
+}
+
+/** Alta, edición y baja de restaurantes: cambian mi lista, el listado público y el detalle (que ve cualquier cliente). */
+function useRestaurantsRefresh() {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: ['owner'] });
+    void queryClient.invalidateQueries({ queryKey: ['restaurants'] });
+    void queryClient.invalidateQueries({ queryKey: ['overview'] });
+  };
+}
+
+export function useCreateRestaurant() {
+  const refresh = useRestaurantsRefresh();
+  return useMutation({
+    mutationFn: (input: RestaurantInput) => api.post<Restaurant>('/owner/restaurants', input).then((r) => r.data),
+    onSuccess: refresh,
+  });
+}
+
+export function useUpdateRestaurant(id: string) {
+  const refresh = useRestaurantsRefresh();
+  return useMutation({
+    mutationFn: (input: Partial<RestaurantInput>) => api.patch<Restaurant>(`/owner/restaurants/${id}`, input),
+    onSuccess: refresh,
+  });
+}
+
+export function useDeleteRestaurant() {
+  const refresh = useRestaurantsRefresh();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/owner/restaurants/${id}`),
+    onSuccess: refresh,
+  });
+}
+
+/** Carta del dueño: incluye los platos pausados (la pública no los muestra). */
+export function useOwnerMenu(restaurantId: string) {
+  return useQuery({
+    queryKey: ['owner', 'menu', restaurantId] as const,
+    queryFn: ({ signal }) => api.get<MenuCategory[]>(`/owner/restaurants/${restaurantId}/menu`, undefined, signal),
+    enabled: restaurantId !== '',
+  });
+}
+
+/** Cualquier cambio en la carta refresca la del dueño y la pública (el detalle del restaurante). */
+function useMenuRefresh() {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: ['owner', 'menu'] });
+    void queryClient.invalidateQueries({ queryKey: ['overview'] });
+  };
+}
+
+export function useSaveMenuItem(restaurantId: string) {
+  const refresh = useMenuRefresh();
+  return useMutation({
+    mutationFn: ({ itemId, input }: { itemId?: string; input: MenuItemInput }) =>
+      itemId
+        ? api.patch(`/owner/restaurants/${restaurantId}/menu-items/${itemId}`, input)
+        : api.post(`/owner/restaurants/${restaurantId}/menu-items`, input).then((r) => r.data),
+    onSuccess: refresh,
+  });
+}
+
+export function useSetMenuItemAvailable(restaurantId: string) {
+  const refresh = useMenuRefresh();
+  return useMutation({
+    mutationFn: ({ itemId, available }: { itemId: string; available: boolean }) =>
+      api.patch(`/owner/restaurants/${restaurantId}/menu-items/${itemId}`, { available }),
+    onSuccess: refresh,
+  });
+}
+
+export function useDeleteMenuItem(restaurantId: string) {
+  const refresh = useMenuRefresh();
+  return useMutation({
+    mutationFn: (itemId: string) => api.delete(`/owner/restaurants/${restaurantId}/menu-items/${itemId}`),
+    onSuccess: refresh,
   });
 }

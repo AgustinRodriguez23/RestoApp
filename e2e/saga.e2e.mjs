@@ -298,6 +298,84 @@ async function main() {
     check('aparece en el filtro "canceladas"', afterCancel.body?.data?.some((x) => x.id === created.id));
   }
 
+  // ------------------------------------------------------------------ 9
+  // Gestión de restaurantes del dueño (alta, edición, baja) a través del BFF
+  if (!process.env.E2E_RESTAURANT_ID) {
+    section('9. Gestión de restaurantes: crear, editar y eliminar desde el panel');
+    const input = {
+      name: `E2E Gestión ${RUN}`,
+      cuisine: 'Pruebas',
+      address: 'Calle Falsa 456, Quilmes',
+      openingHours: [{ dayOfWeek: 5, opens: '20:00', closes: '01:00' }],
+      tables: [{ number: 1, capacity: 4 }, { number: 2, capacity: 2 }],
+    };
+    const created = await http('POST', `${BFF}/owner/restaurants`, { token: owner, body: input });
+    const newId = created.body?.id ?? created.body?._id;
+    check('el dueño crea un restaurante (201)', created.status === 201 && !!newId, `${created.status} ${JSON.stringify(created.body)}`);
+
+    const mine = await http('GET', `${BFF}/owner/restaurants`, { token: owner });
+    check('aparece en "mis restaurantes"', mine.body.some((r) => (r.id ?? r._id) === newId));
+    check('y también en el listado público', (await http('GET', `${BFF}/restaurants?search=${encodeURIComponent(input.name)}`)).body.data.some((r) => (r.id ?? r._id) === newId));
+
+    check('un cliente no puede crear restaurantes (403)', (await http('POST', `${BFF}/owner/restaurants`, { token: customer, body: input })).status === 403);
+    check('sin mesas el BFF rechaza antes de molestar al servicio (400)', (await http('POST', `${BFF}/owner/restaurants`, { token: owner, body: { ...input, tables: [] } })).status === 400);
+    check('mesas con número repetido: 400', (await http('PATCH', `${BFF}/owner/restaurants/${newId}`, { token: owner, body: { tables: [{ number: 1, capacity: 4 }, { number: 1, capacity: 2 }] } })).status === 400);
+
+    const renamed = `${input.name} (editado)`;
+    const patched = await http('PATCH', `${BFF}/owner/restaurants/${newId}`, { token: owner, body: { name: renamed, tables: [{ number: 7, capacity: 6 }] } });
+    check('editar nombre y mesas responde 200', patched.status === 200, `${patched.status} ${JSON.stringify(patched.body)}`);
+    const seen = (await http('GET', `${BFF}/restaurants/${newId}/overview`)).body.restaurant;
+    check('el detalle público muestra el cambio enseguida (el caché se invalida)', seen?.name === renamed && seen?.tables?.[0]?.number === 7, JSON.stringify(seen));
+
+    const stranger = await register('RESTAURANT_OWNER', 'stranger2');
+    check('otro dueño no puede modificarlo (403)', (await http('PATCH', `${BFF}/owner/restaurants/${newId}`, { token: stranger, body: { name: 'Robado!!' } })).status === 403);
+    check('ni eliminarlo (403)', (await http('DELETE', `${BFF}/owner/restaurants/${newId}`, { token: stranger })).status === 403);
+
+    const removed = await http('DELETE', `${BFF}/owner/restaurants/${newId}`, { token: owner });
+    check('el dueño lo elimina (204)', removed.status === 204, String(removed.status));
+    check('el detalle público ya no existe (404)', (await http('GET', `${BFF}/restaurants/${newId}/overview`)).status === 404);
+    check('y no figura en "mis restaurantes"', !(await http('GET', `${BFF}/owner/restaurants`, { token: owner })).body.some((r) => (r.id ?? r._id) === newId));
+  }
+
+  // ------------------------------------------------------------------ 10
+  // Carta del dueño a través del BFF: alta, pausa, edición y baja, con la carta pública siempre al día
+  if (!process.env.E2E_RESTAURANT_ID) {
+    section('10. Carta del dueño: agregar, pausar, editar y quitar platos');
+    const base = `${BFF}/owner/restaurants/${restaurantId}`;
+    const publicMenu = async () => (await http('GET', `${BFF}/restaurants/${restaurantId}/overview`)).body.menu ?? [];
+    const names = (menu) => menu.flatMap((c) => c.items.map((i) => i.name));
+    const ownerMenu = async () => (await http('GET', `${base}/menu`, { token: owner })).body ?? [];
+    const dish = { category: 'Entradas', name: `Provoleta ${RUN}`, priceCents: 850050, allergens: ['MILK'], variants: [{ name: 'Con jamón', priceDeltaCents: 120000 }] };
+
+    const added = await http('POST', `${base}/menu-items`, { token: owner, body: dish });
+    const itemId = added.body?.id ?? added.body?._id;
+    check('el dueño agrega un plato (201)', added.status === 201 && !!itemId, `${added.status} ${JSON.stringify(added.body)}`);
+    check('un alérgeno inventado se rechaza (400)', (await http('POST', `${base}/menu-items`, { token: owner, body: { ...dish, allergens: ['LACTOSE'] } })).status === 400);
+    check('un precio con decimales se rechaza (400): viaja en centavos enteros', (await http('POST', `${base}/menu-items`, { token: owner, body: { ...dish, priceCents: 100.5 } })).status === 400);
+    check('un cliente no puede agregar platos (403)', (await http('POST', `${base}/menu-items`, { token: customer, body: dish })).status === 403);
+
+    check('el plato aparece en la carta del dueño', names(await ownerMenu()).includes(dish.name));
+    check('y en la carta pública', names(await publicMenu()).includes(dish.name));
+
+    const paused = await http('PATCH', `${base}/menu-items/${itemId}`, { token: owner, body: { available: false } });
+    check('pausarlo responde 200', paused.status === 200, String(paused.status));
+    check('pausado: desaparece de la carta pública', !names(await publicMenu()).includes(dish.name));
+    const stillThere = (await ownerMenu()).flatMap((c) => c.items).find((i) => i.name === dish.name);
+    check('pero el dueño lo sigue viendo, marcado como no disponible', stillThere?.available === false, JSON.stringify(stillThere));
+
+    await http('PATCH', `${base}/menu-items/${itemId}`, { token: owner, body: { available: true, priceCents: 900000 } });
+    const back = (await publicMenu()).flatMap((c) => c.items).find((i) => i.name === dish.name);
+    check('al reactivarlo y cambiar el precio, la carta pública lo muestra con el precio nuevo', back?.priceCents === 900000, JSON.stringify(back));
+
+    const stranger = await register('RESTAURANT_OWNER', 'stranger3');
+    check('otro dueño no puede modificar sus platos (403)', (await http('PATCH', `${base}/menu-items/${itemId}`, { token: stranger, body: { priceCents: 1 } })).status === 403);
+    check('ni quitarlos (403)', (await http('DELETE', `${base}/menu-items/${itemId}`, { token: stranger })).status === 403);
+
+    check('el dueño quita el plato (204)', (await http('DELETE', `${base}/menu-items/${itemId}`, { token: owner })).status === 204);
+    check('ya no está en ninguna carta', !names(await ownerMenu()).includes(dish.name) && !names(await publicMenu()).includes(dish.name));
+    check('quitarlo de nuevo da 404', (await http('DELETE', `${base}/menu-items/${itemId}`, { token: owner })).status === 404);
+  }
+
   // ------------------------------------------------------------------ 7
   if (process.env.E2E_EXPIRY === '1') {
     section('7. Vencimiento: si no paga a tiempo, la mesa se libera');

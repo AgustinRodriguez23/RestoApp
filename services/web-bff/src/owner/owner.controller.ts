@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiForbiddenResponse, ApiOperation, ApiTags, ApiUnauthorizedResponse } from '@nestjs/swagger';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
 import { Ctx } from '../security/call-context.decorator';
 import { JwtAuthGuard } from '../security/jwt-auth.guard';
 import { CallContext, UpstreamClient } from '../upstream/upstream-client';
 import { ListRestaurantReservationsQueryDto, UpdateReservationStatusDto } from './dto/owner.dto';
+import { CreateRestaurantDto, UpdateRestaurantDto } from './dto/restaurant-input.dto';
 
 /**
  * Panel del dueño. El BFF solo reenvía: quién es dueño de qué lo decide cada servicio
@@ -25,6 +26,25 @@ export class OwnerController {
   @ApiOperation({ summary: 'Mis restaurantes (solo RESTAURANT_OWNER)' })
   restaurants(@Ctx() ctx: CallContext) {
     return this.upstream.call('restaurants', { path: '/restaurants/mine' }, ctx);
+  }
+
+  @Post('restaurants')
+  @ApiOperation({ summary: 'Crear un restaurante (el dueño es el usuario del token)' })
+  createRestaurant(@Body() dto: CreateRestaurantDto, @Ctx() ctx: CallContext) {
+    return this.upstream.call('restaurants', { method: 'POST', path: '/restaurants', body: dto }, ctx);
+  }
+
+  @Patch('restaurants/:id')
+  @ApiOperation({ summary: 'Modificar un restaurante mío (datos, mesas u horarios). Las reservas ya hechas no se revalidan.' })
+  updateRestaurant(@Param('id', ParseObjectIdPipe) id: string, @Body() dto: UpdateRestaurantDto, @Ctx() ctx: CallContext) {
+    return this.upstream.call('restaurants', { method: 'PATCH', path: `/restaurants/${id}`, body: dto }, ctx);
+  }
+
+  @Delete('restaurants/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Eliminar un restaurante mío y su carta. Las reservas existentes no se tocan.' })
+  async removeRestaurant(@Param('id', ParseObjectIdPipe) id: string, @Ctx() ctx: CallContext) {
+    await this.upstream.call('restaurants', { method: 'DELETE', path: `/restaurants/${id}` }, ctx);
   }
 
   @Get('restaurants/:id/reservations')

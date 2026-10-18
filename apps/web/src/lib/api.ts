@@ -25,7 +25,7 @@ export interface ApiResponse<T> {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH';
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   body?: unknown;
   query?: Record<string, string | number | undefined>;
   headers?: Record<string, string>;
@@ -97,4 +97,5 @@ export const api = {
   post: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
     request<T>(path, { method: 'POST', body, headers }),
   patch: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body }).then((r) => r.data),
+  delete: (path: string) => request<null>(path, { method: 'DELETE' }).then(() => undefined),
 };

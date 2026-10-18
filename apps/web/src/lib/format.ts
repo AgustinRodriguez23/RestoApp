@@ -1,8 +1,12 @@
 const DEFAULT_TZ = 'America/Argentina/Buenos_Aires';
 
-/** Los montos viajan en centavos (enteros) para no arrastrar errores de coma flotante. */
+/**
+ * Los montos viajan en centavos (enteros) para no arrastrar errores de coma flotante.
+ * Los centavos se muestran solo si existen: $ 4.500 y $ 4.500,50 (redondear un precio con centavos engaña al cliente).
+ */
 export function formatMoney(cents: number, currency = 'ARS'): string {
-  return new Intl.NumberFormat('es-AR', { style: 'currency', currency, maximumFractionDigits: 0 }).format(cents / 100);
+  const digits = cents % 100 === 0 ? 0 : 2; // $ 4.500 o $ 4.500,50, nunca $ 4.500,5
+  return new Intl.NumberFormat('es-AR', { style: 'currency', currency, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(cents / 100);
 }
 
 export function formatTime(iso: string, timeZone = DEFAULT_TZ): string {
@@ -55,6 +59,9 @@ const ALLERGENS: Record<string, string> = {
   LUPIN: 'altramuz',
   MOLLUSCS: 'moluscos',
 };
+
+/** Todos los códigos conocidos, en el orden en que se muestran en los formularios. */
+export const ALLERGEN_CODES = Object.keys(ALLERGENS);
 
 /** El servidor manda el código (MILK); la persona tiene que leer "lácteos". Lo que no se conoce se muestra tal cual. */
 export function allergenLabel(code: string): string {
