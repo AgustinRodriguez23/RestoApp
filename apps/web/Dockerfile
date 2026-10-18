@@ -1,5 +1,5 @@
 # ---- Etapa 1: build de la app (Vite genera archivos estáticos) ----
-FROM node:20-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 # Más paciencia con el registro de npm (en redes lentas el build cortaba con ETIMEDOUT)
 ENV npm_config_fetch_retries=5 \
