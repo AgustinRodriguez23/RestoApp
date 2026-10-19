@@ -26,6 +26,11 @@ const owned = (overrides: Partial<OwnerReservation> = {}): OwnerReservation => (
 });
 const page = (data: OwnerReservation[], extra = {}) => ({ data, page: 1, limit: 20, total: data.length, totalPages: 1, ...extra });
 const LIST = `GET /owner/restaurants/${RID}/reservations`;
+const SUMMARY = `GET /owner/restaurants/${RID}/summary`;
+const summaryOf = (byStatus: Partial<Record<string, number>>) => {
+  const full = { PENDING_PAYMENT: 0, CONFIRMED: 0, CANCELLED: 0, EXPIRED: 0, COMPLETED: 0, NO_SHOW: 0, ...byStatus };
+  return { date: dateInputValue(), total: Object.values(full).reduce((a, b) => a + b, 0), byStatus: full };
+};
 
 describe('OwnerPage', () => {
   it('un cliente no ve el link del panel y si entra a /panel vuelve al inicio', async () => {
@@ -73,7 +78,7 @@ describe('OwnerPage', () => {
     renderApp('/panel');
     await screen.findByText('Ana Pérez');
 
-    await user.click(screen.getByRole('button', { name: 'No vinieron' }));
+    await user.click(screen.getByRole('button', { name: /No vinieron/ }));
     await waitFor(() => expect(server.callsTo('GET', `/owner/restaurants/${RID}/reservations`).some((c) => c.query.status === 'NO_SHOW')).toBe(true));
 
     await user.selectOptions(screen.getByLabelText('Restaurante'), RID2);
@@ -149,5 +154,75 @@ describe('OwnerPage', () => {
     await user.click(await screen.findByRole('button', { name: 'Siguiente' }));
 
     await waitFor(() => expect(server.callsTo('GET', `/owner/restaurants/${RID}/reservations`).some((c) => c.query.page === '2')).toBe(true));
+  });
+
+  describe('resumen del día', () => {
+    it('muestra los conteos por estado del día pedido y el total', async () => {
+      const server = mockApi({
+        'GET /owner/restaurants': { body: [restaurant(RID, 'La Esquina')] },
+        [LIST]: { body: page([owned()]) },
+        [SUMMARY]: { body: summaryOf({ CONFIRMED: 5, NO_SHOW: 2, CANCELLED: 1 }) },
+      });
+      signIn(OWNER);
+      renderApp('/panel');
+
+      expect(await screen.findByRole('button', { name: 'Todas: 8' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Confirmadas: 5' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'No vinieron: 2' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Por pagar: 0' })).toBeInTheDocument();
+      expect(server.callsTo('GET', `/owner/restaurants/${RID}/summary`)[0]?.query).toEqual({ date: dateInputValue() });
+    });
+
+    it('tocar una tarjeta filtra la lista de abajo por ese estado', async () => {
+      const server = mockApi({
+        'GET /owner/restaurants': { body: [restaurant(RID, 'La Esquina')] },
+        [LIST]: { body: page([owned()]) },
+        [SUMMARY]: { body: summaryOf({ CONFIRMED: 1, COMPLETED: 3 }) },
+      });
+      const user = userEvent.setup();
+      signIn(OWNER);
+      renderApp('/panel');
+
+      await user.click(await screen.findByRole('button', { name: 'Asistieron: 3' }));
+
+      expect(screen.getByRole('button', { name: 'Asistieron: 3' })).toHaveAttribute('aria-pressed', 'true');
+      await waitFor(() => expect(server.callsTo('GET', `/owner/restaurants/${RID}/reservations`).some((c) => c.query.status === 'COMPLETED')).toBe(true));
+    });
+
+    it('al marcar una reserva, los conteos se actualizan', async () => {
+      let marked = false;
+      const server = mockApi({
+        'GET /owner/restaurants': { body: [restaurant(RID, 'La Esquina')] },
+        [LIST]: () => ({ body: page([owned({ status: marked ? 'NO_SHOW' : 'CONFIRMED' })]) }),
+        [SUMMARY]: () => ({ body: summaryOf(marked ? { NO_SHOW: 1 } : { CONFIRMED: 1 }) }),
+        'PATCH /owner/reservations/3f2b1c5e-8a41-4c0e-9d3a-7a1f2b6c9d10/status': () => {
+          marked = true;
+          return { body: owned({ status: 'NO_SHOW' }) };
+        },
+      });
+      const user = userEvent.setup();
+      signIn(OWNER);
+      renderApp('/panel');
+      expect(await screen.findByRole('button', { name: 'Confirmadas: 1' })).toBeInTheDocument();
+
+      await user.click(await screen.findByRole('button', { name: 'No vino' }));
+
+      expect(await screen.findByRole('button', { name: 'No vinieron: 1' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Confirmadas: 0' })).toBeInTheDocument();
+      expect(server.callsTo('GET', `/owner/restaurants/${RID}/summary`).length).toBeGreaterThan(1);
+    });
+
+    it('si el resumen falla, la lista y los filtros siguen funcionando (sin números)', async () => {
+      mockApi({
+        'GET /owner/restaurants': { body: [restaurant(RID, 'La Esquina')] },
+        [LIST]: { body: page([owned()]) },
+        [SUMMARY]: { status: 502, body: { message: 'reservations-service falló' } },
+      });
+      signIn(OWNER);
+      renderApp('/panel');
+
+      expect(await screen.findByText('Ana Pérez')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Confirmadas: sin dato' })).toBeInTheDocument();
+    });
   });
 });

@@ -29,4 +29,7 @@ async function bootstrap() {
   );
 }
 
-bootstrap();
+bootstrap().catch((error: unknown) => {
+  Logger.error(`No se pudo iniciar: ${error instanceof Error ? error.message : String(error)}`, undefined, 'Bootstrap');
+  process.exit(1);
+});

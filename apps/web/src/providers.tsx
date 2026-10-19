@@ -5,7 +5,7 @@ import { ApiError } from './lib/api';
 import { AuthProvider } from './auth/AuthContext';
 import { createStore, type AppStore } from './store';
 
-export function createQueryClient() {
+function createQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {

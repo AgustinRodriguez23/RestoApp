@@ -376,6 +376,37 @@ async function main() {
     check('quitarlo de nuevo da 404', (await http('DELETE', `${base}/menu-items/${itemId}`, { token: owner })).status === 404);
   }
 
+  // ------------------------------------------------------------------ 11
+  // Resumen del día: el conteo agregado en la base tiene que coincidir con lo que muestra el listado
+  if (!process.env.E2E_RESTAURANT_ID) {
+    section('11. Resumen del día: conteo por estado');
+    const day = freshDay();
+    const [a, b, c] = [(await reserve(slot(day, '12:00'))).body, (await reserve(slot(day, '14:00'))).body, (await reserve(slot(day, '16:00'))).body];
+    check('se crean tres reservas ese día', !!a.id && !!b.id && !!c.id);
+    check('el dueño cancela una', (await http('POST', `${BFF}/reservations/${c.id}/cancel`, { token: owner })).status === 200);
+
+    const summary = await http('GET', `${BFF}/owner/restaurants/${restaurantId}/summary?date=${day}`, { token: owner });
+    const s = summary.body;
+    check('el resumen responde 200 con la fecha pedida', summary.status === 200 && s.date === day, `${summary.status} ${JSON.stringify(s)}`);
+    check('hay 3 reservas en total y 1 cancelada', s.total === 3 && s.byStatus.CANCELLED === 1, JSON.stringify(s));
+    check('las otras 2 están vigentes (confirmadas o esperando la seña)', s.byStatus.CONFIRMED + s.byStatus.PENDING_PAYMENT === 2, JSON.stringify(s.byStatus));
+    check('aparecen los seis estados, aunque estén en 0', Object.keys(s.byStatus).length === 6);
+
+    let consistent = true;
+    for (const [status, count] of Object.entries(s.byStatus)) {
+      const list = await http('GET', `${BFF}/owner/restaurants/${restaurantId}/reservations?date=${day}&status=${status}`, { token: owner });
+      if (list.body.total !== count) consistent = false;
+    }
+    check('cada número coincide con el total del listado filtrado por ese estado', consistent);
+
+    const empty = await http('GET', `${BFF}/owner/restaurants/${restaurantId}/summary?date=${freshDay()}`, { token: owner });
+    check('un día sin reservas da total 0', empty.body.total === 0);
+    check('un cliente no puede ver el resumen (403/404)', [403, 404].includes((await http('GET', `${BFF}/owner/restaurants/${restaurantId}/summary?date=${day}`, { token: customer })).status));
+    const stranger = await register('RESTAURANT_OWNER', 'stranger4');
+    check('un dueño ajeno tampoco (403/404)', [403, 404].includes((await http('GET', `${BFF}/owner/restaurants/${restaurantId}/summary?date=${day}`, { token: stranger })).status));
+    check('sin fecha: 400', (await http('GET', `${BFF}/owner/restaurants/${restaurantId}/summary`, { token: owner })).status === 400);
+  }
+
   // ------------------------------------------------------------------ 7
   if (process.env.E2E_EXPIRY === '1') {
     section('7. Vencimiento: si no paga a tiempo, la mesa se libera');

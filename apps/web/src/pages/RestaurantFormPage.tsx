@@ -41,7 +41,7 @@ function RestaurantForm({ restaurant }: { restaurant?: Restaurant }) {
 
     const done = (message: string) => () => {
       dispatch(toastActions.push('success', message));
-      navigate('/panel');
+      void navigate('/panel');
     };
     if (restaurant) update.mutate(toInput(form), { onSuccess: done('Cambios guardados') });
     else create.mutate(toInput(form), { onSuccess: done('Restaurante creado') });
@@ -194,7 +194,7 @@ function RestaurantForm({ restaurant }: { restaurant?: Restaurant }) {
                     remove.mutate(restaurant.id, {
                       onSuccess: () => {
                         dispatch(toastActions.push('success', 'Restaurante eliminado'));
-                        navigate('/panel');
+                        void navigate('/panel');
                       },
                     })
                   }

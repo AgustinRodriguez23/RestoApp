@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../lib/api';
-import type { CreateReservationInput, MenuCategory, MenuItemInput, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
+import type { CreateReservationInput, DaySummary, MenuCategory, MenuItemInput, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
 
 /**
  * Todo el estado que vive en el servidor pasa por React Query: caché, reintentos, "cargando" y
@@ -144,13 +144,26 @@ export function useOwnerReservations(params: OwnerReservationsParams) {
   });
 }
 
+export function useDaySummary(restaurantId: string, date: string) {
+  return useQuery({
+    queryKey: ['owner', 'summary', restaurantId, date] as const,
+    queryFn: ({ signal }) => api.get<DaySummary>(`/owner/restaurants/${restaurantId}/summary`, { date }, signal),
+    enabled: restaurantId !== '' && date !== '',
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: true,
+  });
+}
+
 /** Marcar "asistió" (COMPLETED) o "no vino" (NO_SHOW) y cancelar: las dos acciones cambian la lista del dueño. */
 export function useSetReservationStatus() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { id: string; status: 'COMPLETED' | 'NO_SHOW' }) =>
       api.patch<OwnerReservation>(`/owner/reservations/${input.id}/status`, { status: input.status }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['owner', 'reservations'] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['owner', 'reservations'] });
+      void queryClient.invalidateQueries({ queryKey: ['owner', 'summary'] });
+    },
   });
 }
 
@@ -160,6 +173,7 @@ export function useOwnerCancel() {
     mutationFn: (id: string) => api.post<OwnerReservation>(`/reservations/${id}/cancel`).then((r) => r.data),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['owner', 'reservations'] });
+      void queryClient.invalidateQueries({ queryKey: ['owner', 'summary'] });
       void queryClient.invalidateQueries({ queryKey: ['overview'] }); // la mesa vuelve a estar libre
     },
   });

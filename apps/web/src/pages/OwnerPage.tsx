@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useMyRestaurants, useOwnerCancel, useOwnerReservations, useSetReservationStatus } from '../api/hooks';
+import { useDaySummary, useMyRestaurants, useOwnerCancel, useOwnerReservations, useSetReservationStatus } from '../api/hooks';
 import type { OwnerReservation, ReservationStatus } from '../api/types';
 import { ReservationBadge } from '../components/StatusBadge';
 import { Button, EmptyState, ErrorNotice, Field, inputClass, Spinner } from '../components/ui';
@@ -10,12 +10,15 @@ import { toastActions } from '../store/toastSlice';
 
 const linkButton = 'inline-flex min-h-11 items-center rounded-lg bg-sifon px-4 text-sm font-semibold text-white hover:bg-sifon-dark';
 
+/** Cada tarjeta del resumen es también un filtro de la lista de abajo. */
 const FILTERS: { value: ReservationStatus | ''; label: string }[] = [
   { value: '', label: 'Todas' },
   { value: 'CONFIRMED', label: 'Confirmadas' },
+  { value: 'PENDING_PAYMENT', label: 'Por pagar' },
   { value: 'COMPLETED', label: 'Asistieron' },
   { value: 'NO_SHOW', label: 'No vinieron' },
   { value: 'CANCELLED', label: 'Canceladas' },
+  { value: 'EXPIRED', label: 'Vencidas' },
 ];
 
 function Actions({ reservation }: { reservation: OwnerReservation }) {
@@ -110,6 +113,7 @@ export function OwnerPage() {
   const list = restaurants.data ?? [];
   const restaurantId = chosen || list[0]?.id || '';
   const reservations = useOwnerReservations({ restaurantId, date, status, page });
+  const summary = useDaySummary(restaurantId, date);
 
   useEffect(() => setPage(1), [restaurantId, date, status]);
 
@@ -169,20 +173,26 @@ export function OwnerPage() {
             )}
           </p>
 
-          <div role="group" aria-label="Filtrar por estado" className="flex flex-wrap gap-2">
-            {FILTERS.map((filter) => (
-              <button
-                key={filter.value}
-                type="button"
-                aria-pressed={status === filter.value}
-                onClick={() => setStatus(filter.value)}
-                className={`min-h-10 rounded-full border px-4 text-sm font-semibold ${
-                  status === filter.value ? 'border-ink bg-ink text-white' : 'border-line bg-surface hover:border-sifon'
-                }`}
-              >
-                {filter.label}
-              </button>
-            ))}
+          <div role="group" aria-label="Resumen del día y filtro por estado" className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+            {FILTERS.map((filter) => {
+              const count = filter.value === '' ? summary.data?.total : summary.data?.byStatus[filter.value];
+              const active = status === filter.value;
+              return (
+                <button
+                  key={filter.value}
+                  type="button"
+                  aria-pressed={active}
+                  aria-label={`${filter.label}: ${count ?? 'sin dato'}`}
+                  onClick={() => setStatus(filter.value)}
+                  className={`grid min-h-16 content-center justify-items-start gap-0.5 rounded-xl border px-3 py-2 text-left ${
+                    active ? 'border-ink bg-ink text-white' : 'border-line bg-surface hover:border-sifon'
+                  }`}
+                >
+                  <span className="font-display text-2xl font-bold tabular-nums leading-none">{count ?? '–'}</span>
+                  <span className={`text-xs font-semibold ${active ? 'text-white/85' : 'text-muted'}`}>{filter.label}</span>
+                </button>
+              );
+            })}
           </div>
 
           <section aria-live="polite" aria-busy={reservations.isFetching} className="grid gap-4">

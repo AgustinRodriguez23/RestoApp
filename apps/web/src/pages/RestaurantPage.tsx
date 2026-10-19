@@ -63,7 +63,7 @@ export function RestaurantPage() {
 
   function reserve() {
     if (!isAuthenticated) {
-      navigate('/ingresar', { state: { from: `/restaurantes/${id}` } });
+      void navigate('/ingresar', { state: { from: `/restaurantes/${id}` } });
       return;
     }
     if (!draft.startsAt) return;
@@ -74,10 +74,10 @@ export function RestaurantPage() {
           dispatch(bookingActions.clearSelection());
           if (reservation.status === 'PENDING_PAYMENT') {
             dispatch(toastActions.push('info', 'Mesa reservada. Pagá la seña para confirmarla.'));
-            navigate(`/reservas/${reservation.id}/pagar`);
+            void navigate(`/reservas/${reservation.id}/pagar`);
           } else {
             dispatch(toastActions.push('success', 'Reserva confirmada'));
-            navigate('/reservas');
+            void navigate('/reservas');
           }
         },
         onError: (e) => {

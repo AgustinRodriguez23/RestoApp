@@ -91,6 +91,24 @@ npm run test:cov
 
 Los tests unitarios no necesitan ninguna base de datos levantada.
 
+### Lint (ESLint)
+
+```bash
+npm run lint        # toda la plataforma, ~20 s; falla con cualquier aviso
+npm run lint:fix    # arregla solo lo que ESLint puede arreglar sin cambiar el sentido
+```
+
+Hay **una sola configuración en la raíz** (`eslint.config.mjs`, formato *flat* de ESLint 9) con secciones por carpeta: servicios NestJS (Node + Jest), frontend (navegador + reglas de hooks de React) y scripts `.mjs` (e2e, perf). ESLint no reemplaza al compilador: `tsc` valida tipos, ESLint busca errores que los tipos no ven.
+
+Decisiones:
+
+- **Nivel `recommended` de ESLint y typescript-eslint**, no el `strict`. Se midió antes de decidir: con ese nivel salían 3 avisos en 298 archivos, así que no hacía falta aflojar ni silenciar nada.
+- **Tres reglas que usan información de tipos**: `no-floating-promises`, `no-misused-promises` y `await-thenable`. Atrapan una promesa que nadie espera, cuyo error se pierde sin ruido. Encontraron 13 casos: los 5 `bootstrap()` de los `main.ts` (si el arranque fallaba no había un manejo explícito; ahora se loguea y el proceso sale con código 1), las llamadas a `navigate()` del front y un servidor HTTP falso de tests que, si un handler explotaba, tiraba el proceso.
+- **`react-hooks/exhaustive-deps`** viene activo (dependencias de `useEffect`/`useCallback`): salió limpio.
+- **Los parámetros sin usar** se permiten con prefijo `_`; sin él son error.
+- **Sin Prettier**: ESLint solo revisa errores, no el formato. Si se suma, que sea una herramienta aparte para no mezclar las dos cosas.
+- El CI corre `npm run lint` como un job propio (en paralelo a los unitarios).
+
 `reservations-service` además tiene **tests de integración contra un PostgreSQL real**, que son los que prueban que no se pueden hacer reservas dobles bajo concurrencia:
 
 ```bash
@@ -181,6 +199,7 @@ npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda m
 | POST | `/reservations` | usuario autenticado | Crea una reserva; la mesa se asigna sola |
 | GET | `/reservations/mine` | usuario autenticado | Mis reservas, paginadas (`page`, `limit`, `status`) |
 | GET | `/reservations/restaurant/:restaurantId` | dueño del restaurante | Reservas del restaurante (`date`, `status`, paginado) |
+| GET | `/reservations/restaurant/:restaurantId/summary` | dueño del restaurante | **Resumen de un día** (`date` obligatoria): cuántas reservas hay por estado |
 | GET | `/reservations/:id` | quien reservó o el dueño | Detalle |
 | POST | `/reservations/:id/cancel` | quien reservó o el dueño | Cancela, solo antes de que empiece |
 | PATCH | `/reservations/:id/status` | dueño del restaurante | `COMPLETED` o `NO_SHOW`, una vez que la reserva empezó |
@@ -224,6 +243,7 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 | GET | `/reservations/:id/payment` | Estado del pago de la seña |
 | GET | `/me/overview` | **Agregada**: mi perfil + mis próximas 5 reservas + las que esperan el pago |
 | GET | `/owner/restaurants` | **Dueño**: mis restaurantes |
+| GET | `/owner/restaurants/:id/summary` | **Dueño**: resumen de un día (`date`): conteo de reservas por estado |
 | POST | `/owner/restaurants` | **Dueño**: crea un restaurante (el dueño es el del token, nunca el del cuerpo) |
 | PATCH, DELETE | `/owner/restaurants/:id` | **Dueño**: edita datos, mesas y horarios / elimina el restaurante y su carta |
 | GET | `/owner/restaurants/:id/menu` | **Dueño**: su carta completa, **incluyendo los platos pausados** |
@@ -386,7 +406,7 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 
 ### Limitaciones conocidas
 
-- **El panel del dueño cubre reservas, restaurante y carta** (ver «Panel del dueño»); el resumen del día todavía no existe.
+- **El panel del dueño cubre reservas, restaurante y carta** (ver «Panel del dueño»); incluye el resumen del día.
 - El **token se guarda en `localStorage`**: sobrevive al F5 pero un script malicioso (XSS) podría leerlo. Lo más seguro sería que el BFF lo entregue en una cookie `httpOnly`.
 - Los **tests** cubren la lógica y las pantallas con un servidor falso (`fetch` simulado); no hay todavía pruebas con un navegador real contra el stack (lo recorrí a mano con Playwright, pero ese script no está en el repo).
 - Sin Docker en mi entorno de desarrollo no pude probar la imagen `web` ni la configuración de nginx; sí probé el build de la imagen paso a paso (instalación aislada + `npm run build`) y el frontend contra los servicios reales con `npm run dev`.
@@ -394,7 +414,7 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 
 ## Panel del dueño (`/panel`)
 
-El dueño de un restaurante ve las reservas de su local, marca si el cliente fue, puede cancelar y **crea, edita y elimina sus restaurantes** (datos, mesas y horarios) y **administra su carta**. Alcance deliberadamente acotado: no incluye un resumen del día.
+El dueño de un restaurante ve las reservas de su local, marca si el cliente fue, puede cancelar y **crea, edita y elimina sus restaurantes** (datos, mesas y horarios) **administra su carta** y ve un **resumen del día**. Alcance deliberadamente acotado: el resumen cuenta reservas por estado (no comensales, ocupación por hora ni señas).
 
 | Pieza | Qué se agregó |
 |---|---|
@@ -434,6 +454,15 @@ Esas reglas las impone reservations-service (`cancel` falla si ya comenzó; `sta
 - **Mutaciones que refrescan lo correcto**: tras crear, editar o eliminar se invalidan mi lista, el listado público y el detalle, y en el servidor el caché de Redis se invalida solo (Fase 8).
 - El teléfono vacío **no se envía** (el servidor lo rechaza por formato), así que una vez cargado no se puede dejar en blanco desde la pantalla.
 
+### El resumen del día: decisiones
+
+- **Siete tarjetas que también son filtros**: el total del día y un número por estado (confirmadas, por pagar, asistieron, no vinieron, canceladas, vencidas). Tocar una filtra la lista de abajo, así que el resumen y el listado son una sola pantalla y no hay que aprender dos controles. Reemplaza a los botones de filtro de antes.
+- **El conteo se hace en la base, no en el navegador ni en el BFF**: `GET /reservations/restaurant/:id/summary?date=` ejecuta un `GROUP BY status` en Postgres. La lista está paginada (máximo 50 por página), así que sumarla desde afuera se cortaría con un día grande; la consulta agregada cuesta lo mismo con 10 reservas que con 1.000.
+- **Mismo «día» que el listado**: es el día calendario en la zona horaria del restaurante (medianoche de Buenos Aires, no de UTC). Los dos endpoints comparten la función que calcula el rango, para que no puedan diferir; el e2e verifica que cada número coincide con el total del listado filtrado por ese estado.
+- **Los seis estados siempre están, en 0 si no hay**: la pantalla no tiene que adivinar cuáles faltan. `COUNT` llega de Postgres como texto (es un `bigint`) y se convierte en el servicio.
+- **Mismos permisos que el listado**: solo el dueño de ese restaurante (si no, 404). La fecha es obligatoria.
+- **Si el resumen falla, la pantalla sigue siendo útil**: la lista y los filtros funcionan igual y los números se muestran como «–». Los números se actualizan solos al marcar una reserva, cancelarla o volver a la pestaña.
+
 ### La carta: decisiones
 
 - **Los precios se escriben en pesos y viajan en centavos enteros.** El formulario acepta coma o punto (`4500,50`) y convierte con redondeo (`19,99` × 100 da `1998,999…` en coma flotante; se redondea a `1999`). Un monto inválido o con más de dos decimales se rechaza antes de enviarlo (`lib/menuForm.ts`). Editar un plato y guardarlo sin tocar nada **no cambia** su precio (hay un test).
@@ -449,6 +478,7 @@ Esas reglas las impone reservations-service (`cancel` falla si ya comenzó; `sta
 - La integración de reservations-service (Postgres y RabbitMQ reales) verifica que `customerName` se guarda desde el token.
 - La prueba de punta a punta tiene dos secciones nuevas: «8. Panel del dueño» (lista, nombre del cliente, filtro por día, dueño ajeno, marcar antes de hora, cancelar) y «9. Gestión de restaurantes» (crear, editar, ver el cambio al instante pese al caché, dueño ajeno, eliminar).
 - 19 tests más de pantalla y de reglas del formulario de restaurante (alta, errores, mesas repetidas, edición, baja con confirmación) y 18 de la carta (conversión de precios, validación, alta, edición, pausa, baja y errores).
+- El resumen: 5 tests unitarios y 4 HTTP en reservations-service, 3 de integración con Postgres real (la consulta agregada y el día en la zona del restaurante), 2 en el BFF y 4 de pantalla. El e2e suma «11. Resumen del día».
 - La prueba de punta a punta suma «10. Carta del dueño»: alta, validación (alérgeno inventado, precio con decimales), dueño ajeno, pausa y reactivación con la carta pública al día, baja.
 - Recorrido en un navegador real con Playwright contra el stack (con un restaurants-service simulado, sin MongoDB real): sin errores de consola.
 
@@ -457,7 +487,8 @@ Esas reglas las impone reservations-service (`cancel` falla si ya comenzó; `sta
 - **El endpoint público de la carta acepta `?includeUnavailable=true` sin autenticación** (así lo definió restaurants-service), por lo que quien conozca el parámetro puede ver los platos pausados. No son datos sensibles, pero conviene restringirlo si se pausan por un motivo interno.
 - La carta no tiene **orden manual**: se ordena por categoría y nombre. Tampoco hay fotos de los platos.
 - El selector de restaurante aparece solo si hay más de uno; con dos locales de igual nombre no se distinguen.
-- No hay filtros por rango de fechas ni por nombre del cliente; el listado es por **un día**.
+- No hay filtros por rango de fechas ni por nombre del cliente; el listado y el resumen son por **un día**.
+- El resumen **cuenta reservas, no comensales**: no suma las personas de cada reserva, ni muestra ocupación por franja horaria ni el monto de las señas. Sería sumar columnas a la misma consulta agregada.
 - Las reservas de varios locales no se juntan en una sola vista.
 - El panel no se actualiza solo: refresca al volver a la pestaña o al tocar una acción.
 - `DB_SYNCHRONIZE` crea la columna nueva automáticamente; en producción haría falta una migración.
@@ -568,6 +599,7 @@ No se dispara con cada `push` a una rama: los commits sueltos no gastan minutos,
 
 | Job | Qué verifica | Detalle |
 |---|---|---|
+| **Lint** | `npm run lint` sobre todo el repo, con cero avisos permitidos | Un solo job (la configuración es única). Corre en paralelo a los demás |
 | **Unitarios** (×6) | Compila (con chequeo de tipos) y corre los tests de `auth`, `restaurants`, `reservations`, `payments`, `web-bff` y `web` | Un job por paquete, en paralelo y con `fail-fast: false`: si uno falla se ve igual el estado de los demás. Usa `npm ci`, que instala exactamente lo del `package-lock.json` |
 | **Integración** (×2) | `reservations` y `payments` contra **PostgreSQL 16 y RabbitMQ reales** | Los lanza como *service containers* con los puertos y credenciales que esperan los tests |
 | **Integración del caché** | El caché de `restaurants-service` contra un **Redis real** | Prueba la invalidación, que dos instancias compartan el caché y que, si Redis se cae, el servicio siga respondiendo |
@@ -678,12 +710,14 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después (front y backend medidos)
 - [x] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
 - [x] **Panel del dueño** (solo reservas del local)
+- [x] **ESLint** en todo el monorepo, con reglas de promesas y hooks, y un job en el CI
 
 ## Estructura
 
 ```
 reservas-platform/
 ├── package.json            # npm workspaces
+├── eslint.config.mjs       # una sola configuración de lint para todo el repo
 ├── docker-compose.yml
 ├── .env.example
 ├── e2e/                    # prueba de punta a punta de la saga

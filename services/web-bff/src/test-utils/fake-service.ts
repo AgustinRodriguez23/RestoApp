@@ -1,4 +1,4 @@
-import { createServer, IncomingHttpHeaders, IncomingMessage, Server } from 'node:http';
+import { createServer, IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { AddressInfo } from 'node:net';
 
 export interface RecordedCall {
@@ -32,24 +32,32 @@ export class FakeService {
 
   static async start(): Promise<FakeService> {
     const fake = new FakeService();
-    fake.server = createServer(async (req, res) => {
-      const call: RecordedCall = {
-        method: req.method ?? 'GET',
-        path: req.url ?? '/',
-        headers: req.headers,
-        body: await readJson(req),
-      };
-      fake.calls.push(call);
-      const reply = await fake.handler(call);
-      if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
-      if (res.destroyed) return;
-      res.statusCode = reply.status ?? 200;
-      res.setHeader('Content-Type', 'application/json');
-      for (const [name, value] of Object.entries(reply.headers ?? {})) res.setHeader(name, value);
-      res.end(reply.raw ?? (reply.body === undefined ? '' : JSON.stringify(reply.body)));
+    fake.server = createServer((req, res) => {
+      fake.handle(req, res).catch(() => {
+        // un handler de test que explota no debe tirar el proceso: respondemos 500
+        if (!res.headersSent) res.statusCode = 500;
+        res.end();
+      });
     });
     await new Promise<void>((resolve) => fake.server.listen(0, '127.0.0.1', resolve));
     return fake;
+  }
+
+  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const call: RecordedCall = {
+      method: req.method ?? 'GET',
+      path: req.url ?? '/',
+      headers: req.headers,
+      body: await readJson(req),
+    };
+    this.calls.push(call);
+    const reply = await this.handler(call);
+    if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
+    if (res.destroyed) return;
+    res.statusCode = reply.status ?? 200;
+    res.setHeader('Content-Type', 'application/json');
+    for (const [name, value] of Object.entries(reply.headers ?? {})) res.setHeader(name, value);
+    res.end(reply.raw ?? (reply.body === undefined ? '' : JSON.stringify(reply.body)));
   }
 
   get url(): string {

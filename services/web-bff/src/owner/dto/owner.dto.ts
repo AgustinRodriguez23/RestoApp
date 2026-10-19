@@ -10,6 +10,13 @@ export class ListRestaurantReservationsQueryDto extends ListMyReservationsQueryD
   date?: string;
 }
 
+/** Resumen de un día: la fecha es obligatoria. */
+export class RestaurantSummaryQueryDto {
+  @ApiProperty({ example: '2026-10-16', description: 'Día a resumir (zona horaria del restaurante)' })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date tiene que tener formato YYYY-MM-DD' })
+  date: string;
+}
+
 export const OWNER_SETTABLE_STATUSES = [ReservationStatus.COMPLETED, ReservationStatus.NO_SHOW] as const;
 
 export class UpdateReservationStatusDto {

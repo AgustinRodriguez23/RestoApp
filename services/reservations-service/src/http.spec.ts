@@ -20,7 +20,7 @@ const validBody = { restaurantId: RID, partySize: 3, startsAt: '2026-10-16T21:00
 describe('HTTP (controllers + guards + validación + filtro de errores)', () => {
   let app: INestApplication;
   let jwt: JwtService;
-  let reservations: Record<'create' | 'findOne' | 'cancel' | 'updateStatus' | 'listMine' | 'listForRestaurant', jest.Mock>;
+  let reservations: Record<'create' | 'findOne' | 'cancel' | 'updateStatus' | 'listMine' | 'listForRestaurant' | 'summaryForRestaurant', jest.Mock>;
   let availability: { getAvailability: jest.Mock };
 
   const token = (role: Role, sub = 'user-1') => jwt.sign({ sub, email: `${sub}@example.com`, role });
@@ -34,6 +34,7 @@ describe('HTTP (controllers + guards + validación + filtro de errores)', () => 
       updateStatus: jest.fn(),
       listMine: jest.fn(),
       listForRestaurant: jest.fn(),
+      summaryForRestaurant: jest.fn(),
     };
     availability = { getAvailability: jest.fn() };
 
@@ -63,6 +64,7 @@ describe('HTTP (controllers + guards + validación + filtro de errores)', () => 
       ['POST', '/reservations'],
       ['GET', '/reservations/mine'],
       ['GET', `/reservations/restaurant/${RID}`],
+      ['GET', `/reservations/restaurant/${RID}/summary?date=2026-10-16`],
       ['GET', `/reservations/${RES_ID}`],
       ['POST', `/reservations/${RES_ID}/cancel`],
       ['PATCH', `/reservations/${RES_ID}/status`],
@@ -263,6 +265,41 @@ describe('HTTP (controllers + guards + validación + filtro de errores)', () => 
       expect(reservations.findOne).not.toHaveBeenCalled();
     });
 
+    describe('GET /reservations/restaurant/:id/summary', () => {
+      const summary = (token: string, query: Record<string, string> = { date: '2026-10-16' }, id = RID) =>
+        request(app.getHttpServer()).get(`/reservations/restaurant/${id}/summary`).query(query).set('Authorization', token);
+
+      it('un cliente recibe 403 y no se consulta nada', async () => {
+        expect((await summary(bearer(Role.CUSTOMER))).status).toBe(403);
+        expect(reservations.summaryForRestaurant).not.toHaveBeenCalled();
+      });
+
+      it('el dueño recibe el resumen, y el servicio recibe su usuario, el restaurante y el día', async () => {
+        const body = { date: '2026-10-16', total: 3, byStatus: { CONFIRMED: 3 } };
+        reservations.summaryForRestaurant.mockResolvedValue(body);
+
+        const res = await summary(bearer(Role.RESTAURANT_OWNER, 'owner-1'));
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual(body);
+        expect(reservations.summaryForRestaurant).toHaveBeenCalledWith(RID, expect.objectContaining({ sub: 'owner-1' }), '2026-10-16');
+      });
+
+      it('la fecha es obligatoria y con formato YYYY-MM-DD (400)', async () => {
+        const token = bearer(Role.RESTAURANT_OWNER);
+        expect((await summary(token, {})).status).toBe(400);
+        expect((await summary(token, { date: '16/10/2026' })).status).toBe(400);
+        expect((await summary(token, { date: '2026-10-16' }, 'no-es-un-id')).status).toBe(400);
+        expect(reservations.summaryForRestaurant).not.toHaveBeenCalled();
+      });
+
+      it('no se confunde con GET /reservations/:id', async () => {
+        reservations.summaryForRestaurant.mockResolvedValue({ date: '2026-10-16', total: 0, byStatus: {} });
+        await summary(bearer(Role.RESTAURANT_OWNER));
+        expect(reservations.findOne).not.toHaveBeenCalled();
+      });
+    });
+
     it('un restaurantId inválido en la ruta responde 400', async () => {
       const res = await request(app.getHttpServer())
         .get('/reservations/restaurant/no-es-un-id')
@@ -353,6 +390,7 @@ describe('HTTP (controllers + guards + validación + filtro de errores)', () => 
           '/reservations',
           '/reservations/mine',
           '/reservations/restaurant/{restaurantId}',
+          '/reservations/restaurant/{restaurantId}/summary',
           '/reservations/{id}',
           '/reservations/{id}/cancel',
           '/reservations/{id}/status',

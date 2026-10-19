@@ -4,7 +4,7 @@ import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
 import { Ctx } from '../security/call-context.decorator';
 import { JwtAuthGuard } from '../security/jwt-auth.guard';
 import { CallContext, UpstreamClient } from '../upstream/upstream-client';
-import { ListRestaurantReservationsQueryDto, UpdateReservationStatusDto } from './dto/owner.dto';
+import { ListRestaurantReservationsQueryDto, RestaurantSummaryQueryDto, UpdateReservationStatusDto } from './dto/owner.dto';
 import { CreateRestaurantDto, UpdateRestaurantDto } from './dto/restaurant-input.dto';
 
 /**
@@ -51,6 +51,12 @@ export class OwnerController {
   @ApiOperation({ summary: 'Reservas de un restaurante mío. Filtros: date (YYYY-MM-DD), status, page, limit' })
   reservations(@Param('id', ParseObjectIdPipe) id: string, @Query() query: ListRestaurantReservationsQueryDto, @Ctx() ctx: CallContext) {
     return this.upstream.call('reservations', { path: `/reservations/restaurant/${id}`, query: { ...query } }, ctx);
+  }
+
+  @Get('restaurants/:id/summary')
+  @ApiOperation({ summary: 'Resumen de un día de un restaurante mío: cuántas reservas hay por estado' })
+  summary(@Param('id', ParseObjectIdPipe) id: string, @Query() query: RestaurantSummaryQueryDto, @Ctx() ctx: CallContext) {
+    return this.upstream.call('reservations', { path: `/reservations/restaurant/${id}/summary`, query: { date: query.date } }, ctx);
   }
 
   @Patch('reservations/:id/status')

@@ -89,7 +89,10 @@ describe('ReservationsService', () => {
     findOneBy: jest.Mock;
     update: jest.Mock;
     findAndCount: jest.Mock;
+    createQueryBuilder: jest.Mock;
   };
+  let summaryRows: unknown[];
+  let qb: Record<string, jest.Mock>;
   let restaurants: { getRestaurant: jest.Mock };
   let outbox: { enqueue: jest.Mock };
   let deposit: DepositPolicy;
@@ -120,7 +123,13 @@ describe('ReservationsService', () => {
       findOneBy: jest.fn(),
       update: jest.fn(),
       findAndCount: jest.fn(),
+      createQueryBuilder: jest.fn(() => qb),
     };
+    // Query builder de mentira: cada método devuelve el mismo objeto (encadenable) y getRawMany entrega las filas del test
+    summaryRows = [];
+    qb = {} as Record<string, jest.Mock>;
+    for (const m of ['select', 'addSelect', 'where', 'andWhere', 'groupBy']) qb[m] = jest.fn(() => qb);
+    qb.getRawMany = jest.fn(async () => summaryRows);
     restaurants = { getRestaurant: jest.fn().mockResolvedValue(restaurant) };
     outbox = { enqueue: jest.fn().mockResolvedValue(undefined) };
     deposit = makeDeposit(0); // sin seña por defecto: es el comportamiento de antes de existir los pagos
@@ -627,6 +636,49 @@ describe('ReservationsService', () => {
       await expect(service.listForRestaurant(RID, owner, { date: '2026-02-30' })).rejects.toBeInstanceOf(
         BadRequestException,
       );
+    });
+  });
+
+  describe('summaryForRestaurant', () => {
+    it('solo el dueño de ese restaurante puede verlo (si no, 404) y no consulta la base', async () => {
+      await expect(service.summaryForRestaurant(RID, otherOwner, '2026-10-16')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.summaryForRestaurant(RID, customer, '2026-10-16')).rejects.toBeInstanceOf(NotFoundException);
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('devuelve todos los estados (en 0 los que no hay) y convierte el COUNT, que llega como texto', async () => {
+      summaryRows = [
+        { status: 'CONFIRMED', count: '7' },
+        { status: 'NO_SHOW', count: '2' },
+      ];
+
+      const result = await service.summaryForRestaurant(RID, owner, '2026-10-16');
+
+      expect(result).toEqual({
+        date: '2026-10-16',
+        total: 9,
+        byStatus: { PENDING_PAYMENT: 0, CONFIRMED: 7, CANCELLED: 0, EXPIRED: 0, COMPLETED: 0, NO_SHOW: 2 },
+      });
+    });
+
+    it('un día sin reservas da todo en 0', async () => {
+      const result = await service.summaryForRestaurant(RID, owner, '2026-10-16');
+      expect(result.total).toBe(0);
+      expect(Object.values(result.byStatus).every((n) => n === 0)).toBe(true);
+    });
+
+    it('cuenta el día calendario del restaurante (medianoche de Buenos Aires, no la de UTC) y solo ese restaurante', async () => {
+      await service.summaryForRestaurant(RID, owner, '2026-10-16');
+
+      const params = qb.andWhere.mock.calls[0][1] as { from: Date; to: Date };
+      expect(params.from.toISOString()).toBe('2026-10-16T03:00:00.000Z');
+      expect(params.to.toISOString()).toBe('2026-10-17T03:00:00.000Z');
+      expect(qb.where).toHaveBeenCalledWith('r.restaurant_id = :restaurantId', { restaurantId: RID });
+      expect(qb.groupBy).toHaveBeenCalledWith('r.status');
+    });
+
+    it('rechaza una fecha inexistente', async () => {
+      await expect(service.summaryForRestaurant(RID, owner, '2026-02-30')).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 });

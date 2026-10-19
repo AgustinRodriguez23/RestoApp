@@ -672,6 +672,26 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       expect(query(reservations.calls[0])).toEqual({ date: '2026-10-16', status: 'CONFIRMED', page: '2', limit: '20' });
     });
 
+    it('el resumen del día se pide con la fecha y devuelve los conteos del servicio', async () => {
+      const body = { date: '2026-10-16', total: 4, byStatus: { CONFIRMED: 3, NO_SHOW: 1 } };
+      reservations.handler = () => ok(body);
+
+      const res = await server().get(`/owner/restaurants/${RID}/summary?date=2026-10-16`).set('Authorization', asOwner()).expect(200);
+
+      expect(res.body).toEqual(body);
+      expect(reservations.calls[0].path).toBe(`/reservations/restaurant/${RID}/summary?date=2026-10-16`);
+    });
+
+    it('el resumen exige fecha válida y sesión, y propaga el 404 de un dueño ajeno', async () => {
+      await server().get(`/owner/restaurants/${RID}/summary`).set('Authorization', asOwner()).expect(400);
+      await server().get(`/owner/restaurants/${RID}/summary?date=16-10-2026`).set('Authorization', asOwner()).expect(400);
+      await server().get(`/owner/restaurants/${RID}/summary?date=2026-10-16`).expect(401);
+      expect(reservations.calls).toHaveLength(0);
+
+      reservations.handler = () => fail(404, 'Restaurante no encontrado');
+      await server().get(`/owner/restaurants/${RID}/summary?date=2026-10-16`).set('Authorization', asOwner()).expect(404);
+    });
+
     it('rechaza ids y filtros inválidos sin llamar al servicio', async () => {
       const bad = (url: string) => server().get(url).set('Authorization', asOwner()).expect(400);
       await bad('/owner/restaurants/no-es-id/reservations');
@@ -1009,6 +1029,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
           '/owner/restaurants/{restaurantId}/menu-items',
           '/owner/restaurants/{restaurantId}/menu-items/{itemId}',
           '/owner/restaurants/{id}/reservations',
+          '/owner/restaurants/{id}/summary',
           '/reservations',
           '/reservations/mine',
           '/reservations/{id}',

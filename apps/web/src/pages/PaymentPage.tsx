@@ -9,7 +9,7 @@ import { useAppDispatch } from '../store';
 import { toastActions } from '../store/toastSlice';
 
 /** Medios de prueba de la pasarela simulada. Con una pasarela real acá iría el formulario de tarjeta tokenizado. */
-export const TEST_CARDS = [
+const TEST_CARDS = [
   { token: 'tok_approved', label: 'Tarjeta aprobada', hint: 'El pago se aprueba al instante' },
   { token: 'tok_declined', label: 'Tarjeta rechazada', hint: 'El banco rechaza el pago: la reserva se cancela' },
   { token: 'tok_insufficient_funds', label: 'Sin fondos', hint: 'Rechazo por fondos insuficientes' },

@@ -39,6 +39,12 @@ export interface Paginated<T> {
   totalPages: number;
 }
 
+export interface DaySummary {
+  date: string;
+  total: number;
+  byStatus: Record<ReservationStatus, number>;
+}
+
 /** Código de PostgreSQL para "se violó una restricción de exclusión" (la de no solapar reservas). */
 const EXCLUSION_VIOLATION = '23P01';
 
@@ -171,15 +177,46 @@ export class ReservationsService {
     const where: FindOptionsWhere<Reservation> = { restaurantId };
     if (query.status) where.status = query.status;
     if (query.date) {
-      const date = parseDateOnly(query.date);
-      if (!date) throw new BadRequestException('date no es una fecha válida (YYYY-MM-DD)');
-
-      const dayStart = localToUtc(date.year, date.month, date.day, 0, this.policy.timeZone);
-      const dayEnd = localToUtc(date.year, date.month, date.day, 1440, this.policy.timeZone);
-      where.startsAt = And(MoreThanOrEqual(dayStart), LessThan(dayEnd));
+      const { from, to } = this.dayRange(query.date);
+      where.startsAt = And(MoreThanOrEqual(from), LessThan(to));
     }
 
     return this.paginate(where, query, 'ASC');
+  }
+
+  /**
+   * Cuántas reservas hay en un día, por estado. Es una sola consulta agregada en la base (GROUP BY):
+   * no trae las filas ni depende del tamaño de página, así que cuesta lo mismo con 10 reservas que con 1.000.
+   * "Día" es el día calendario en la zona horaria del restaurante, igual que en el listado.
+   */
+  async summaryForRestaurant(restaurantId: string, user: JwtPayload, date: string): Promise<DaySummary> {
+    if (!(await this.isRestaurantOwner(restaurantId, user))) {
+      throw new NotFoundException('Restaurante no encontrado');
+    }
+    const range = this.dayRange(date);
+    const rows = await this.repo
+      .createQueryBuilder('r')
+      .select('r.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .where('r.restaurant_id = :restaurantId', { restaurantId })
+      .andWhere('r.starts_at >= :from AND r.starts_at < :to', { from: range.from, to: range.to })
+      .groupBy('r.status')
+      .getRawMany<{ status: ReservationStatus; count: string }>();
+
+    // Todos los estados aparecen (en 0 si no hay): la pantalla no tiene que adivinar cuáles faltan
+    const byStatus = Object.fromEntries(Object.values(ReservationStatus).map((s) => [s, 0])) as Record<ReservationStatus, number>;
+    for (const row of rows) byStatus[row.status] = Number(row.count); // COUNT llega como texto (bigint)
+    const total = Object.values(byStatus).reduce((sum, n) => sum + n, 0);
+    return { date, total, byStatus };
+  }
+
+  /** Rango [inicio, fin) del día calendario `YYYY-MM-DD` en la zona horaria del restaurante. */
+  private dayRange(dateText: string) {
+    const date = parseDateOnly(dateText);
+    if (!date) throw new BadRequestException('date no es una fecha válida (YYYY-MM-DD)');
+    const from = localToUtc(date.year, date.month, date.day, 0, this.policy.timeZone);
+    const to = localToUtc(date.year, date.month, date.day, 1440, this.policy.timeZone);
+    return { from, to };
   }
 
   /**

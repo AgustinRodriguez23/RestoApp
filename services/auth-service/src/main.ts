@@ -26,4 +26,7 @@ async function bootstrap() {
   Logger.log(`auth-service escuchando en http://localhost:${port} (Swagger en /docs)`, 'Bootstrap');
 }
 
-bootstrap();
+bootstrap().catch((error: unknown) => {
+  Logger.error(`No se pudo iniciar: ${error instanceof Error ? error.message : String(error)}`, undefined, 'Bootstrap');
+  process.exit(1);
+});

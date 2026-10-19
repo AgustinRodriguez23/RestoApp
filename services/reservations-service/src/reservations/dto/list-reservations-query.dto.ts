@@ -1,4 +1,4 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, Matches, Max, Min } from 'class-validator';
 import { ReservationStatus } from '../entities/reservation-status.enum';
@@ -31,4 +31,11 @@ export class ListRestaurantReservationsQueryDto extends ListReservationsQueryDto
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date tiene que tener formato YYYY-MM-DD' })
   date?: string;
+}
+
+/** Resumen del día: acá la fecha es obligatoria (sin día no hay qué resumir). */
+export class RestaurantSummaryQueryDto {
+  @ApiProperty({ example: '2026-10-16', description: 'Día a resumir (zona horaria del restaurante)' })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date tiene que tener formato YYYY-MM-DD' })
+  date: string;
 }

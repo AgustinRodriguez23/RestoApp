@@ -368,6 +368,44 @@ describe('reservations-service (integración con PostgreSQL real)', () => {
     });
   });
 
+  describe('resumen del día', () => {
+    const summary = (date: string, auth = ownerAuth()) =>
+      request(app.getHttpServer()).get(`/reservations/restaurant/${RID}/summary?date=${date}`).set('Authorization', auth);
+
+    it('cuenta las reservas del día por estado, con la consulta agregada en la base real', async () => {
+      const first = await book('c1', 2, at('18:00'));
+      await book('c2', 2, at('20:00'));
+      await book('c3', 4, at('10:00'));
+      await request(app.getHttpServer()).post(`/reservations/${first.body.id}/cancel`).set('Authorization', bearer('c1'));
+
+      const res = await summary(day);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        date: day,
+        total: 3,
+        byStatus: { PENDING_PAYMENT: 0, CONFIRMED: 2, CANCELLED: 1, EXPIRED: 0, COMPLETED: 0, NO_SHOW: 0 },
+      });
+    });
+
+    it('un día sin reservas da todo en 0 y otro día no se mezcla', async () => {
+      await book('c1', 2, at('18:00'));
+
+      const empty = await summary('2030-01-01');
+      const other = await summary(new Date(Date.parse(`${day}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10));
+
+      expect(empty.body.total).toBe(0);
+      expect(other.body.total).toBe(0);
+    });
+
+    it('un cliente (403) y un dueño ajeno (404) no ven el resumen', async () => {
+      await book('c1', 2, at('18:00'));
+
+      expect((await summary(day, bearer('c1'))).status).toBe(403);
+      expect((await summary(day, bearer('owner-ajeno', Role.RESTAURANT_OWNER))).status).toBe(404);
+    });
+  });
+
   describe('disponibilidad', () => {
     const availability = (partySize: number) =>
       request(app.getHttpServer()).get('/availability').query({ restaurantId: RID, date: day, partySize });

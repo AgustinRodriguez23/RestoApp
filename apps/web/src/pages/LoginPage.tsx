@@ -30,7 +30,7 @@ export function LoginPage() {
     try {
       const user = isRegister ? await register({ name: name.trim(), email: email.trim(), password }) : await login(email.trim(), password);
       dispatch(toastActions.push('success', `Hola, ${user.name}`));
-      navigate(from, { replace: true });
+      void navigate(from, { replace: true });
     } catch (e) {
       setError(e);
     } finally {
@@ -63,7 +63,7 @@ export function LoginPage() {
         ))}
       </div>
 
-      <form onSubmit={submit} className="grid gap-4" noValidate={false}>
+      <form onSubmit={(e) => void submit(e)} className="grid gap-4" noValidate={false}>
         {isRegister && (
           <Field label="Nombre">
             <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} required minLength={2} maxLength={80} autoComplete="name" />

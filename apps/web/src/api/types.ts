@@ -144,6 +144,13 @@ export interface OwnerReservation {
   notes: string | null;
 }
 
+/** Cuántas reservas hay en un día, por estado (los seis estados siempre están, en 0 si no hay). */
+export interface DaySummary {
+  date: string;
+  total: number;
+  byStatus: Record<ReservationStatus, number>;
+}
+
 export interface CreateReservationInput {
   restaurantId: string;
   partySize: number;
