@@ -404,6 +404,18 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 - **Accesibilidad básica**: etiquetas en todos los campos, foco visible, regiones `aria-live` para los resultados, respeta `prefers-reduced-motion`, botones de al menos 44 px.
 - **Diseño**: la reserva se muestra como una *comanda* (el ticket del mozo, con su borde perforado); es el único adorno de la app.
 
+### Responsive
+
+Se diseñó de móvil hacia arriba: sin prefijo es una columna, y `sm:`, `md:` y `lg:` suman columnas. Se revisó pantalla por pantalla con capturas a 320, 375 y 768 px, midiendo además que la página nunca tenga scroll horizontal. Lo que se corrigió y por qué:
+
+- **Header**: en móvil bajaba a tres filas. Ahora el logo y la sesión van arriba y la navegación abajo, en su propia fila (si no entra, se desliza de costado). El nombre largo se corta con `…`.
+- **Grilla del `Layout`**: la columna era `auto` y se ensanchaba hasta el ancho de los links en una sola línea, lo que desbordaba la página a 320 px. Se fijó con `minmax(0, 1fr)`: es el clásico problema de que un hijo de una grilla nunca se achica por debajo de su contenido.
+- **Resumen del día**: con 7 tarjetas en 2 columnas quedaba una huérfana. "Todas" ocupa el ancho completo y las otras seis forman filas parejas (2 columnas en móvil, 3 en tablet, 7 en escritorio).
+- **Formulario del restaurante**: cada mesa y cada turno son una tarjeta con campos en dos columnas (en escritorio siguen en una línea). Antes eran 4 controles apilados en zigzag por turno.
+- **Fila de reserva del panel**: la hora y el nombre van lado a lado en vez de una arriba de la otra.
+
+Limitación: a 320 px (celulares muy chicos) el último link de la navegación queda apenas cortado y hay que deslizar. No hay un test automático de responsive: jsdom no calcula layout, así que se verificó con un navegador real.
+
 ### Limitaciones conocidas
 
 - **El panel del dueño cubre reservas, restaurante y carta** (ver «Panel del dueño»); incluye el resumen del día.

@@ -38,7 +38,7 @@ export function Spinner({ small = false }: { small?: boolean }) {
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <label className="grid gap-1.5 text-sm font-medium">
+    <label className="grid min-w-0 gap-1.5 text-sm font-medium">
       {label}
       {children}
       {hint && <span className="text-xs font-normal text-muted">{hint}</span>}

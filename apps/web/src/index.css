@@ -34,6 +34,24 @@
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
   }
+  /*
+   * Safari de iOS: los campos de fecha y hora tienen un ancho mínimo propio, ignoran width:100% y ensanchan
+   * la columna de la grilla, y la página entera se ve más ancha (margen de más). min-width:0 deja que se achiquen
+   * y appearance:none les quita el tamaño intrínseco del sistema (el selector nativo de fecha/hora se sigue abriendo).
+   */
+  input,
+  select,
+  textarea {
+    min-width: 0;
+    max-width: 100%;
+  }
+  input[type='date'],
+  input[type='time'] {
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
+    text-align: left;
+  }
   body {
     min-height: 100dvh;
     background: var(--color-mist);

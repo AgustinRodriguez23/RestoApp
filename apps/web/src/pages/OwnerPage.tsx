@@ -40,7 +40,7 @@ function Actions({ reservation }: { reservation: OwnerReservation }) {
 
   if (confirming) {
     return (
-      <div className="grid gap-2">
+      <div className="col-span-2 grid gap-2 sm:col-span-1">
         <p className="text-sm font-medium">¿Cancelar la reserva de {reservation.customerName ?? 'este cliente'}? Se libera la mesa y se devuelve la seña.</p>
         {error && <ErrorNotice error={error} title="No pudimos cancelar" />}
         <div className="flex gap-2">
@@ -60,7 +60,7 @@ function Actions({ reservation }: { reservation: OwnerReservation }) {
   }
 
   return (
-    <div className="grid gap-2">
+    <div className="col-span-2 grid gap-2 sm:col-span-1">
       {error && <ErrorNotice error={error} title="No pudimos actualizar la reserva" />}
       <div className="flex flex-wrap gap-2">
         {started ? (
@@ -84,7 +84,7 @@ function Actions({ reservation }: { reservation: OwnerReservation }) {
 
 function Row({ reservation }: { reservation: OwnerReservation }) {
   return (
-    <li className="grid gap-3 rounded-xl border border-line bg-surface p-4 sm:grid-cols-[6rem_1fr_auto] sm:items-start">
+    <li className="grid grid-cols-[4.25rem_1fr] gap-x-3 gap-y-3 rounded-xl border border-line bg-surface p-4 sm:grid-cols-[6rem_1fr_auto] sm:items-start">
       <p className="text-2xl font-bold tabular-nums">{formatTime(reservation.startsAt)}</p>
       <div className="grid gap-1">
         <p className="font-semibold">{reservation.customerName ?? 'Cliente'}</p>
@@ -173,8 +173,8 @@ export function OwnerPage() {
             )}
           </p>
 
-          <div role="group" aria-label="Resumen del día y filtro por estado" className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
-            {FILTERS.map((filter) => {
+          <div role="group" aria-label="Resumen del día y filtro por estado" className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
+            {FILTERS.map((filter, index) => {
               const count = filter.value === '' ? summary.data?.total : summary.data?.byStatus[filter.value];
               const active = status === filter.value;
               return (
@@ -185,6 +185,9 @@ export function OwnerPage() {
                   aria-label={`${filter.label}: ${count ?? 'sin dato'}`}
                   onClick={() => setStatus(filter.value)}
                   className={`grid min-h-16 content-center justify-items-start gap-0.5 rounded-xl border px-3 py-2 text-left ${
+                    // "Todas" ocupa el ancho completo en móvil y tablet: así los otros seis quedan en filas parejas, sin una tarjeta huérfana
+                    index === 0 ? 'col-span-2 sm:col-span-3 lg:col-span-1' : ''
+                  } ${
                     active ? 'border-ink bg-ink text-white' : 'border-line bg-surface hover:border-sifon'
                   }`}
                 >

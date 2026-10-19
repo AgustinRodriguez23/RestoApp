@@ -3,18 +3,19 @@ import { useAuth } from '../auth/AuthContext';
 import { Toasts } from './Toasts';
 
 const navLink = ({ isActive }: { isActive: boolean }) =>
-  `rounded-md px-3 py-2 text-sm font-semibold ${isActive ? 'bg-white/15 text-white' : 'text-white/75 hover:text-white'}`;
+  `shrink-0 whitespace-nowrap rounded-md px-2 py-2 text-sm font-semibold sm:px-3 ${isActive ? 'bg-white/15 text-white' : 'text-white/75 hover:text-white'}`;
 
 export function Layout() {
   const { user, logout } = useAuth();
   return (
-    <div className="grid min-h-dvh grid-rows-[auto_1fr_auto]">
+    <div className="grid min-h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto]">
       <header className="bg-ink text-white">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-3">
           <Link to="/" className="font-display text-xl font-bold tracking-tight">
             Reservas
           </Link>
-          <nav aria-label="Principal" className="flex gap-1">
+          {/* En móvil la navegación baja a su propia fila (logo y sesión arriba) y, si no entra, se desliza de costado */}
+          <nav aria-label="Principal" className="-mx-2 order-last flex w-full gap-0.5 sm:gap-1 overflow-x-auto sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible">
             <NavLink to="/" end className={navLink}>
               Restaurantes
             </NavLink>
@@ -29,10 +30,10 @@ export function Layout() {
               </NavLink>
             )}
           </nav>
-          <div className="ml-auto flex items-center gap-3 text-sm">
+          <div className="ml-auto flex min-w-0 items-center gap-1 text-sm sm:gap-3">
             {user ? (
               <>
-                <span className="text-white/80">{user.name}</span>
+                <span className="max-w-[9rem] truncate text-white/80 sm:max-w-[16rem]">{user.name}</span>
                 <button type="button" onClick={logout} className="rounded-md px-3 py-2 font-semibold text-white/90 hover:bg-white/15">
                   Salir
                 </button>

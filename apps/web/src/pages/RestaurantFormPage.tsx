@@ -91,12 +91,12 @@ function RestaurantForm({ restaurant }: { restaurant?: Restaurant }) {
           </p>
         )}
         {form.tables.map((table, i) => (
-          <div key={i} className="flex flex-wrap items-end gap-3">
+          <div key={i} className="grid grid-cols-[1fr_1fr_auto] items-end gap-3 rounded-xl border border-line bg-surface p-3 sm:flex sm:flex-wrap sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
             <Field label={`Número de mesa ${i + 1}`}>
-              <input className={`${inputClass} w-28`} type="number" min={1} value={table.number} onChange={(e) => setTable(i, { number: e.target.value })} />
+              <input className={`${inputClass} w-full sm:w-28`} type="number" min={1} value={table.number} onChange={(e) => setTable(i, { number: e.target.value })} />
             </Field>
             <Field label={`Capacidad de la mesa ${i + 1}`}>
-              <input className={`${inputClass} w-28`} type="number" min={1} max={50} value={table.capacity} onChange={(e) => setTable(i, { capacity: e.target.value })} />
+              <input className={`${inputClass} w-full sm:w-28`} type="number" min={1} max={50} value={table.capacity} onChange={(e) => setTable(i, { capacity: e.target.value })} />
             </Field>
             <Button
               type="button"
@@ -127,9 +127,10 @@ function RestaurantForm({ restaurant }: { restaurant?: Restaurant }) {
         )}
         {form.hours.length === 0 && <p className="text-sm text-danger">Sin horarios, nadie va a poder reservar.</p>}
         {form.hours.map((shift, i) => (
-          <div key={i} className="flex flex-wrap items-end gap-3">
+          <div key={i} className="grid grid-cols-2 items-end gap-3 rounded-xl border border-line bg-surface p-3 sm:flex sm:flex-wrap sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
+            <div className="col-span-2 sm:col-span-1">
             <Field label={`Día del turno ${i + 1}`}>
-              <select className={`${inputClass} w-40`} value={shift.dayOfWeek} onChange={(e) => setShift(i, { dayOfWeek: e.target.value })}>
+              <select className={`${inputClass} w-full sm:w-40`} value={shift.dayOfWeek} onChange={(e) => setShift(i, { dayOfWeek: e.target.value })}>
                 {DAYS.map((day, index) => (
                   <option key={day} value={index}>
                     {day}
@@ -137,13 +138,14 @@ function RestaurantForm({ restaurant }: { restaurant?: Restaurant }) {
                 ))}
               </select>
             </Field>
+            </div>
             <Field label={`Abre (turno ${i + 1})`}>
-              <input className={`${inputClass} w-32`} type="time" value={shift.opens} onChange={(e) => setShift(i, { opens: e.target.value })} />
+              <input className={`${inputClass} w-full sm:w-32`} type="time" value={shift.opens} onChange={(e) => setShift(i, { opens: e.target.value })} />
             </Field>
             <Field label={`Cierra (turno ${i + 1})`}>
-              <input className={`${inputClass} w-32`} type="time" value={shift.closes} onChange={(e) => setShift(i, { closes: e.target.value })} />
+              <input className={`${inputClass} w-full sm:w-32`} type="time" value={shift.closes} onChange={(e) => setShift(i, { closes: e.target.value })} />
             </Field>
-            <Button type="button" variant="ghost" aria-label={`Quitar el turno ${i + 1}`} onClick={() => set('hours', form.hours.filter((_, index) => index !== i))}>
+            <Button type="button" variant="ghost" className="col-span-2 justify-self-end sm:col-span-1" aria-label={`Quitar el turno ${i + 1}`} onClick={() => set('hours', form.hours.filter((_, index) => index !== i))}>
               Quitar
             </Button>
           </div>
