@@ -17,6 +17,24 @@ env:
   NODE_VERSION: 20 # el mismo que usan los Dockerfile
 
 jobs:
+
+  # ---------------------------------------------------------------------------
+  # Lint: una sola configuración (eslint.config.mjs) para todo el monorepo.
+  # Cero avisos permitidos. Pegar dentro de `jobs:`, justo ANTES del job `unit`.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      
   # ---------------------------------------------------------------------------
   # Compila y corre los tests unitarios de cada paquete, en paralelo.
   # `npm ci` instala EXACTAMENTE lo que dice package-lock.json (y falla si no coincide con package.json).
