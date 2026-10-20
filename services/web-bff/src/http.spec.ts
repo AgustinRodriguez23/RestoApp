@@ -25,6 +25,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
   let restaurants: FakeService;
   let reservations: FakeService;
   let payments: FakeService;
+  let notifications: FakeService;
   let jwt: JwtService;
 
   const token = (sub = 'user-1') => jwt.sign({ sub, email: `${sub}@example.com`, role: 'CUSTOMER' });
@@ -33,13 +34,20 @@ describe('web-bff (HTTP + servicios falsos)', () => {
   const query = (call: RecordedCall) => Object.fromEntries(new URL(call.path, 'http://x').searchParams);
 
   beforeAll(async () => {
-    [auth, restaurants, reservations, payments] = await Promise.all([FakeService.start(), FakeService.start(), FakeService.start(), FakeService.start()]);
+    [auth, restaurants, reservations, payments, notifications] = await Promise.all([
+      FakeService.start(),
+      FakeService.start(),
+      FakeService.start(),
+      FakeService.start(),
+      FakeService.start(),
+    ]);
     Object.assign(process.env, {
       JWT_SECRET: 'bff-test-secret',
       AUTH_SERVICE_URL: auth.url,
       RESTAURANTS_SERVICE_URL: restaurants.url,
       RESERVATIONS_SERVICE_URL: reservations.url,
       PAYMENTS_SERVICE_URL: payments.url,
+      NOTIFICATIONS_SERVICE_URL: notifications.url,
       PAYMENT_LOOKUP_ATTEMPTS: '3',
       PAYMENT_LOOKUP_DELAY_MS: '0',
       UPSTREAM_TIMEOUT_MS: '400',
@@ -58,12 +66,12 @@ describe('web-bff (HTTP + servicios falsos)', () => {
 
   afterAll(async () => {
     await app.close();
-    await Promise.all([auth.stop(), restaurants.stop(), reservations.stop(), payments.stop()]);
+    await Promise.all([auth.stop(), restaurants.stop(), reservations.stop(), payments.stop(), notifications.stop()]);
     jest.restoreAllMocks();
   });
 
   beforeEach(() => {
-    for (const fake of [auth, restaurants, reservations, payments]) fake.reset(() => fail(404, 'ruta no definida en el test'));
+    for (const fake of [auth, restaurants, reservations, payments, notifications]) fake.reset(() => fail(404, 'ruta no definida en el test'));
   });
 
   describe('autenticación', () => {
@@ -859,6 +867,80 @@ describe('web-bff (HTTP + servicios falsos)', () => {
     });
   });
 
+  describe('notificaciones (/notifications)', () => {
+    const NID = '64b7f0c2a1b2c3d4e5f60aaa';
+    const inbox = { data: [{ id: NID, title: 'Reserva confirmada', read: false }], page: 1, limit: 20, total: 1, totalPages: 1, unreadCount: 1 };
+
+    it('lista reenviando el token y la query ya convertida (page, limit, unread)', async () => {
+      notifications.handler = () => ok(inbox);
+      const bearer = authz('user-9');
+
+      const res = await server().get('/notifications?page=2&limit=5&unread=true').set('Authorization', bearer);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(inbox);
+      expect(notifications.calls[0].path.split('?')[0]).toBe('/notifications');
+      expect(query(notifications.calls[0])).toEqual({ page: '2', limit: '5', unread: 'true' });
+      expect(notifications.calls[0].headers.authorization).toBe(bearer);
+    });
+
+    it('sin token es 401 y no molesta a notifications-service', async () => {
+      const res = await server().get('/notifications');
+      expect(res.status).toBe(401);
+      expect(notifications.calls).toHaveLength(0);
+    });
+
+    it.each(['page=0', 'limit=51', 'unread=quizas', 'userId=otro'])('valida la query ANTES de reenviar (%s → 400)', async (qs) => {
+      const res = await server().get(`/notifications?${qs}`).set('Authorization', authz());
+      expect(res.status).toBe(400);
+      expect(notifications.calls).toHaveLength(0);
+    });
+
+    it('el contador de la campanita se reenvía tal cual', async () => {
+      notifications.handler = () => ok({ count: 3 });
+      const res = await server().get('/notifications/unread-count').set('Authorization', authz());
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ count: 3 });
+      expect(notifications.calls[0]).toMatchObject({ method: 'GET', path: '/notifications/unread-count' });
+    });
+
+    it('marcar todas como leídas es un POST que responde 200', async () => {
+      notifications.handler = () => ok({ updated: 2 });
+      const res = await server().post('/notifications/read-all').set('Authorization', authz());
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ updated: 2 });
+      expect(notifications.calls[0]).toMatchObject({ method: 'POST', path: '/notifications/read-all' });
+    });
+
+    it('marcar una como leída reenvía el PATCH con su id', async () => {
+      notifications.handler = () => ok({ id: NID, read: true });
+      const res = await server().patch(`/notifications/${NID}/read`).set('Authorization', authz());
+      expect(res.status).toBe(200);
+      expect(notifications.calls[0]).toMatchObject({ method: 'PATCH', path: `/notifications/${NID}/read` });
+    });
+
+    it('un id mal formado es 400 sin llegar al servicio', async () => {
+      const res = await server().patch('/notifications/no-es-un-id/read').set('Authorization', authz());
+      expect(res.status).toBe(400);
+      expect(notifications.calls).toHaveLength(0);
+    });
+
+    it('el 404 de una notificación ajena o inexistente llega igual al cliente', async () => {
+      notifications.handler = () => fail(404, 'Notificación no encontrada');
+      const res = await server().patch(`/notifications/${NID}/read`).set('Authorization', authz());
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ message: 'Notificación no encontrada' });
+    });
+
+    it('si notifications-service está caído, responde 502 y NO afecta a las reservas', async () => {
+      notifications.handler = () => fail(500, 'caído');
+      expect((await server().get('/notifications/unread-count').set('Authorization', authz())).status).toBe(502);
+
+      reservations.handler = () => ok({ data: [], page: 1, limit: 10, total: 0, totalPages: 0 });
+      expect((await server().get('/reservations/mine').set('Authorization', authz())).status).toBe(200);
+    });
+  });
+
   describe('trazabilidad de logs', () => {
     type Line = Record<string, unknown>;
     let lines: Line[];
@@ -953,12 +1035,12 @@ describe('web-bff (HTTP + servicios falsos)', () => {
     });
 
     it('los chequeos de salud no ensucian los logs normales (quedan en debug)', async () => {
-      for (const fake of [auth, restaurants, reservations, payments]) fake.handler = () => ok({ status: 'ok' });
+      for (const fake of [auth, restaurants, reservations, payments, notifications]) fake.handler = () => ok({ status: 'ok' });
 
       await server().get('/health').set('x-correlation-id', 'traza-e2e-0007');
 
       const mine = of('traza-e2e-0007');
-      expect(mine).toHaveLength(5); // la request de entrada + las 4 llamadas a los servicios
+      expect(mine).toHaveLength(6); // la request de entrada + las 5 llamadas a los servicios
       expect(mine.every((l) => l.level === 'debug')).toBe(true);
     });
 
@@ -979,7 +1061,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
 
   describe('GET /health', () => {
     it('ok si todos los servicios responden', async () => {
-      for (const fake of [auth, restaurants, reservations, payments]) fake.handler = () => ok({ status: 'ok' });
+      for (const fake of [auth, restaurants, reservations, payments, notifications]) fake.handler = () => ok({ status: 'ok' });
 
       const res = await server().get('/health');
 
@@ -987,7 +1069,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       expect(res.body).toEqual({
         status: 'ok',
         service: 'web-bff',
-        upstreams: { auth: 'up', restaurants: 'up', reservations: 'up', payments: 'up' },
+        upstreams: { auth: 'up', restaurants: 'up', reservations: 'up', payments: 'up', notifications: 'up' },
       });
     });
 
@@ -995,6 +1077,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       auth.handler = () => ok({});
       restaurants.handler = () => ok({});
       payments.handler = () => ok({});
+      notifications.handler = () => ok({});
       reservations.handler = () => fail(500, 'caído');
 
       const res = await server().get('/health');
@@ -1022,6 +1105,10 @@ describe('web-bff (HTTP + servicios falsos)', () => {
           '/auth/register',
           '/health',
           '/me/overview',
+          '/notifications',
+          '/notifications/read-all',
+          '/notifications/unread-count',
+          '/notifications/{id}/read',
           '/owner/reservations/{id}/status',
           '/owner/restaurants',
           '/owner/restaurants/{id}',
