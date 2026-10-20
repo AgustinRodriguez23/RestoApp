@@ -1,9 +1,29 @@
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useUnreadCount } from '../api/hooks';
 import { useAuth } from '../auth/AuthContext';
 import { Toasts } from './Toasts';
 
 const navLink = ({ isActive }: { isActive: boolean }) =>
   `shrink-0 whitespace-nowrap rounded-md px-2 py-2 text-sm font-semibold sm:px-3 ${isActive ? 'bg-white/15 text-white' : 'text-white/75 hover:text-white'}`;
+
+/** Campanita con el contador de sin leer; lleva a la bandeja. */
+function NotificationsBell() {
+  const { data: count = 0 } = useUnreadCount(true);
+  const label = count > 0 ? `Notificaciones, ${count} sin leer` : 'Notificaciones';
+  return (
+    <Link to="/notificaciones" aria-label={label} className="relative inline-flex min-h-10 min-w-10 items-center justify-center rounded-md hover:bg-white/15">
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+        <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+      </svg>
+      {count > 0 && (
+        <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-4 rounded-full bg-red-500 px-1 text-center text-[10px] font-bold leading-4 text-white">
+          {count > 99 ? '99+' : count}
+        </span>
+      )}
+    </Link>
+  );
+}
 
 export function Layout() {
   const { user, logout } = useAuth();
@@ -33,6 +53,7 @@ export function Layout() {
           <div className="ml-auto flex min-w-0 items-center gap-1 text-sm sm:gap-3">
             {user ? (
               <>
+                <NotificationsBell />
                 <span className="max-w-[9rem] truncate text-white/80 sm:max-w-[16rem]">{user.name}</span>
                 <button type="button" onClick={logout} className="rounded-md px-3 py-2 font-semibold text-white/90 hover:bg-white/15">
                   Salir

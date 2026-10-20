@@ -2,6 +2,7 @@ import { Link, Route, Routes } from 'react-router-dom';
 import { Layout, RequireAuth, RequireOwner } from './components/Layout';
 import { LoginPage } from './pages/LoginPage';
 import { MenuPage } from './pages/MenuPage';
+import { NotificationsPage } from './pages/NotificationsPage';
 import { OwnerPage } from './pages/OwnerPage';
 import { PaymentPage } from './pages/PaymentPage';
 import { ReservationsPage } from './pages/ReservationsPage';
@@ -28,6 +29,7 @@ export function App() {
         <Route path="restaurantes/:id" element={<RestaurantPage />} />
         <Route path="ingresar" element={<LoginPage />} />
         <Route element={<RequireAuth />}>
+          <Route path="notificaciones" element={<NotificationsPage />} />
           <Route path="reservas" element={<ReservationsPage />} />
           <Route path="reservas/:id/pagar" element={<PaymentPage />} />
           <Route element={<RequireOwner />}>
