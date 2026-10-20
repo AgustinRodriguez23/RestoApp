@@ -34,7 +34,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-      
+
   # ---------------------------------------------------------------------------
   # Compila y corre los tests unitarios de cada paquete, en paralelo.
   # `npm ci` instala EXACTAMENTE lo que dice package-lock.json (y falla si no coincide con package.json).
@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false # que un servicio roto no oculte si los otros pasan
       matrix:
-        workspace: [auth-service, restaurants-service, reservations-service, payments-service, web-bff, web]
+        workspace: [auth-service, restaurants-service, reservations-service, payments-service, notifications-service, web-bff, web]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -125,6 +125,35 @@ jobs:
       - name: Tests de integración
         run: npm run test:integration -w ${{ matrix.service }}
 
+  integration-notifications:
+    name: Integración · notifications-service
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+    env:
+      RABBITMQ_TEST_URL: amqp://ci:ci@localhost:5672
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Tests de integración
+        run: npm run test:integration -w notifications-service
+
     # ---------------------------------------------------------------------------
   # Integración del caché (Fase 8): contra un Redis real, no simulado.
   # Va aparte porque restaurants-service no usa PostgreSQL (su base es MongoDB, que sus tests no necesitan).
@@ -174,6 +203,7 @@ jobs:
           - { name: payments-service, context: services/payments-service }
           - { name: web-bff, context: services/web-bff }
           - { name: web, context: apps/web }
+          - { name: notifications-service, context: services/notifications-service }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -208,13 +238,14 @@ jobs:
       - name: Validar docker-compose.yml
         run: docker compose config -q
       - name: Construir y levantar el sistema
-        run: docker compose up -d --build auth-service restaurants-service reservations-service payments-service web-bff web
+        run: docker compose up -d --build auth-service restaurants-service reservations-service payments-service notifications-service web-bff web
       - name: Esperar a que el BFF vea a todos los servicios
         run: |
           for i in $(seq 1 60); do
             body=$(curl -s http://localhost:3000/health || true)
             if echo "$body" | grep -q '"auth":"up"' && echo "$body" | grep -q '"restaurants":"up"' \
-               && echo "$body" | grep -q '"reservations":"up"' && echo "$body" | grep -q '"payments":"up"'; then
+               && echo "$body" | grep -q '"reservations":"up"' && echo "$body" | grep -q '"payments":"up"' \
+               && echo "$body" | grep -q '"notifications":"up"'; then
               echo "Todo arriba: $body"; exit 0
             fi
             echo "Esperando ($i/60)... $body"; sleep 5
