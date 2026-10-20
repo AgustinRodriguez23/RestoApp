@@ -226,7 +226,16 @@ describe('reservations-service: seña y saga (integración con PostgreSQL y Rabb
 
       await waitFor(async () => (await status(body.id)) === 'CONFIRMED');
       expect((await get(body.id, 'c1')).body.expiresAt).toBeNull();
-      expect(await outboxOf('reservation.confirmed', body.id)).toHaveLength(1);
+      const events = await outboxOf('reservation.confirmed', body.id);
+      expect(events).toHaveLength(1);
+      expect(events[0].payload.data).toMatchObject({
+        customerId: 'c1',
+        restaurantId: RID,
+        restaurantName: 'Resto de una mesa',
+        partySize: 3,
+        startsAt: expect.any(String),
+        timeZone: expect.any(String),
+      });
     });
 
     it('un payment.succeeded duplicado no genera dos confirmaciones', async () => {
@@ -252,7 +261,15 @@ describe('reservations-service: seña y saga (integración con PostgreSQL y Rabb
 
       await waitFor(async () => (await status(body.id)) === 'CANCELLED');
       const [event] = await outboxOf('reservation.cancelled', body.id);
-      expect(event.payload.data).toMatchObject({ reason: 'PAYMENT_FAILED', refundable: false });
+      expect(event.payload.data).toMatchObject({
+        reason: 'PAYMENT_FAILED',
+        refundable: false,
+        customerId: 'c1',
+        restaurantName: 'Resto de una mesa',
+        partySize: 3,
+        startsAt: expect.any(String),
+        timeZone: expect.any(String),
+      });
       expect((await get(body.id, 'c1')).body.cancelledBy).toBe('system:payment-failed');
 
       // La mesa volvió a estar libre
@@ -278,7 +295,18 @@ describe('reservations-service: seña y saga (integración con PostgreSQL y Rabb
       expect(await expiration.expireDue()).toEqual([body.id]);
 
       expect(await status(body.id)).toBe('EXPIRED');
-      expect(await outboxOf('reservation.expired', body.id)).toHaveLength(1);
+      const events = await outboxOf('reservation.expired', body.id);
+      expect(events).toHaveLength(1);
+      // Con RETURNING de una lista de columnas, TypeORM solo devolvía `id` y el evento salía sin customerId (bug real)
+      expect(events[0].payload.data).toMatchObject({
+        reservationId: body.id,
+        customerId: 'c1',
+        restaurantId: RID,
+        restaurantName: 'Resto de una mesa',
+        partySize: 3,
+        startsAt: expect.any(String),
+        timeZone: expect.any(String),
+      });
       expect((await book('c2')).status).toBe(201); // la mesa se liberó
     });
 
@@ -334,7 +362,12 @@ describe('reservations-service: seña y saga (integración con PostgreSQL y Rabb
       expect((await cancel(id, 'c1')).status).toBe(200);
 
       const [event] = await outboxOf('reservation.cancelled', id);
-      expect(event.payload.data).toMatchObject({ reason: 'CANCELLED_BY_CUSTOMER', refundable: true });
+      expect(event.payload.data).toMatchObject({
+        reason: 'CANCELLED_BY_CUSTOMER',
+        refundable: true,
+        restaurantName: 'Resto de una mesa',
+        startsAt: expect.any(String),
+      });
     });
 
     it('cancelar con menos de 24 h emite refundable=false (se pierde la seña)', async () => {

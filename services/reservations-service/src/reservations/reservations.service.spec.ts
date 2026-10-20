@@ -59,6 +59,7 @@ const reservation = (overrides: Partial<Reservation> = {}): Reservation =>
     restaurantId: RID,
     tableNumber: 2,
     customerId: 'cust-1',
+    restaurantName: 'La Parrilla',
     partySize: 3,
     startsAt: FUTURE_START,
     endsAt: new Date(FUTURE_START.getTime() + 90 * 60_000),
@@ -201,6 +202,17 @@ describe('ReservationsService', () => {
     it('guarda el nombre del cliente tomado del token', async () => {
       await service.create(customer, dto());
       expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ customerName: 'Ana Pérez' }));
+    });
+
+    it('guarda el nombre del restaurante (para las notificaciones)', async () => {
+      await service.create(customer, dto());
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ restaurantName: 'La Parrilla' }));
+    });
+
+    it('si el restaurante no trae nombre guarda null en vez de un texto vacío', async () => {
+      restaurants.getRestaurant.mockResolvedValueOnce({ ...restaurant, name: '' });
+      await service.create(customer, dto());
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ restaurantName: null }));
     });
 
     it('guarda null si el token es viejo y no trae nombre', async () => {
@@ -383,6 +395,31 @@ describe('ReservationsService', () => {
       expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ status: CONFIRMED, depositCents: 0, expiresAt: null }));
       expect(outbox.enqueue.mock.calls[0][1]).toBe('reservation.confirmed');
     });
+
+    it('reservation.confirmed lleva restaurante, día, personas y zona horaria para poder avisarle al cliente', async () => {
+      deposit = makeDeposit(0);
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          ReservationsService,
+          { provide: getRepositoryToken(Reservation), useValue: repo },
+          { provide: RestaurantsClient, useValue: restaurants },
+          { provide: BookingPolicy, useValue: policy },
+          { provide: DepositPolicy, useValue: deposit },
+          { provide: DataSource, useValue: { transaction } },
+          { provide: OutboxService, useValue: outbox },
+        ],
+      }).compile();
+
+      await moduleRef.get(ReservationsService).create(customer, dto({ partySize: 3 }));
+
+      expect(outbox.enqueue.mock.calls[0][2]).toMatchObject({
+        customerId: 'cust-1',
+        restaurantName: 'La Parrilla',
+        partySize: 3,
+        timeZone: policy.timeZone,
+        startsAt: expect.any(String),
+      });
+    });
   });
 
   describe('findOne', () => {
@@ -450,6 +487,11 @@ describe('ReservationsService', () => {
         reason: 'CANCELLED_BY_CUSTOMER',
         refundable: true, // faltan más de 24 h
         depositCents: 15000,
+        // datos para mostrar en la notificación, sin que quien consume tenga que llamar a otro servicio
+        restaurantName: 'La Parrilla',
+        startsAt: FUTURE_START.toISOString(),
+        partySize: 3,
+        timeZone: policy.timeZone,
       });
     });
 

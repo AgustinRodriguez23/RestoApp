@@ -31,6 +31,10 @@ export class Reservation {
   @Column({ name: 'customer_name', type: 'varchar', length: 100, nullable: true })
   customerName: string | null;
 
+  /** Nombre del restaurante al reservar (copia). Va en los eventos para que las notificaciones lo muestren sin consultar a otro servicio. Null en reservas anteriores a este campo. */
+  @Column({ name: 'restaurant_name', type: 'varchar', length: 100, nullable: true })
+  restaurantName: string | null;
+
   @Column({ name: 'party_size', type: 'int' })
   partySize: number;
 

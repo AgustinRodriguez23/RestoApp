@@ -33,7 +33,38 @@ export interface ReservationCreatedData {
   expiresAt: string;
 }
 
-export interface ReservationCancelledData {
+/**
+ * Datos para mostrarle algo a una persona (notificaciones): así quien consume el evento no tiene que llamar a otro servicio.
+ * Se suman a los eventos de forma aditiva: los consumidores existentes (payments) los ignoran.
+ * `restaurantName` es null en reservas anteriores a que se guardara el nombre.
+ */
+export interface ReservationDetails {
+  restaurantName: string | null;
+  startsAt: string;
+  partySize: number;
+  /** Zona horaria en la que hay que mostrar `startsAt`. */
+  timeZone: string;
+}
+
+export function reservationDetails(
+  reservation: { restaurantName: string | null; startsAt: Date; partySize: number },
+  timeZone: string,
+): ReservationDetails {
+  return {
+    restaurantName: reservation.restaurantName,
+    startsAt: reservation.startsAt.toISOString(),
+    partySize: reservation.partySize,
+    timeZone,
+  };
+}
+
+export interface ReservationConfirmedData extends ReservationDetails {
+  reservationId: string;
+  customerId: string;
+  restaurantId: string;
+}
+
+export interface ReservationCancelledData extends ReservationDetails {
   reservationId: string;
   customerId: string;
   restaurantId: string;
@@ -43,7 +74,7 @@ export interface ReservationCancelledData {
   depositCents: number;
 }
 
-export interface ReservationExpiredData {
+export interface ReservationExpiredData extends ReservationDetails {
   reservationId: string;
   customerId: string;
   restaurantId: string;
