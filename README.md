@@ -18,7 +18,9 @@ Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida
  auth  restaurants  reservations   payments
  (PG)  (MongoDB)    (PG)           (PG)
                        ▲  │            ▲
-                       └──┴─ RabbitMQ ─┘  → notifications (MongoDB)
+                       └──┴─ RabbitMQ ─┘
+                              │
+                              └──▶ notifications (MongoDB) ◀── también lo consulta el BFF
 
   Todos → logs JSON con correlationId → Loki → Grafana
 ```
@@ -29,7 +31,7 @@ Plataforma de **reservas de restaurantes** (con seña, carta y cobro) construida
 | `restaurants-service` | Restaurantes, mesas, horarios y carta | MongoDB | 3002 | ✅ Fase 2 |
 | `reservations-service` | Reservas, disponibilidad, estados, seña y vencimiento | PostgreSQL | 3003 | ✅ Fase 3 y 6 |
 | `payments-service` | Seña y cobro, idempotencia, webhooks, reembolsos | PostgreSQL | 3004 | ✅ Fase 6 |
-| `notifications-service` | Consume eventos y notifica | MongoDB | — | Pendiente |
+| `notifications-service` | Consume eventos de reservas y arma la bandeja de avisos del cliente | MongoDB | 3005 | ✅ Notificaciones |
 | `web-bff` | Entrada única del frontend, agrega datos | — | 3000 | ✅ Fase 4 |
 | `web` (`apps/web`) | Frontend React: buscar, reservar, pagar la seña | — | 5173 | ✅ Fase 7 |
 | `redis` | Caché de lecturas de `restaurants-service` | — | 6379 | ✅ Fase 8 |
@@ -58,6 +60,7 @@ npm run dev:auth            # en una terminal
 npm run dev:restaurants     # en otra terminal
 npm run dev:reservations    # en otra terminal
 npm run dev:payments        # en otra terminal
+npm run dev:notifications   # en otra terminal (la bandeja de avisos)
 npm run dev:bff             # en otra terminal (el frontend solo habla con este)
 npm run dev:web             # el frontend: http://localhost:5173
 npm run obs:up              # Loki + Alloy + Grafana (ver «Trazabilidad de logs»)
@@ -69,6 +72,7 @@ npm run obs:up              # Loki + Alloy + Grafana (ver «Trazabilidad de logs
 | restaurants | http://localhost:3002 | http://localhost:3002/docs | http://localhost:3002/health |
 | reservations | http://localhost:3003 | http://localhost:3003/docs | http://localhost:3003/health |
 | payments | http://localhost:3004 | http://localhost:3004/docs | http://localhost:3004/health |
+| notifications | http://localhost:3005 | http://localhost:3005/docs | http://localhost:3005/health |
 | RabbitMQ (panel) | http://localhost:15672 (usuario `reservas`, clave `reservas_password`) | — | — |
 | **web-bff** | http://localhost:3000 | http://localhost:3000/docs | http://localhost:3000/health |
 | **web (frontend)** | http://localhost:5173 | — | — |
@@ -612,12 +616,12 @@ No se dispara con cada `push` a una rama: los commits sueltos no gastan minutos,
 | Job | Qué verifica | Detalle |
 |---|---|---|
 | **Lint** | `npm run lint` sobre todo el repo, con cero avisos permitidos | Un solo job (la configuración es única). Corre en paralelo a los demás |
-| **Unitarios** (×6) | Compila (con chequeo de tipos) y corre los tests de `auth`, `restaurants`, `reservations`, `payments`, `web-bff` y `web` | Un job por paquete, en paralelo y con `fail-fast: false`: si uno falla se ve igual el estado de los demás. Usa `npm ci`, que instala exactamente lo del `package-lock.json` |
-| **Integración** (×2) | `reservations` y `payments` contra **PostgreSQL 16 y RabbitMQ reales** | Los lanza como *service containers* con los puertos y credenciales que esperan los tests |
+| **Unitarios** (×7) | Compila (con chequeo de tipos) y corre los tests de `auth`, `restaurants`, `reservations`, `payments`, `notifications`, `web-bff` y `web` | Un job por paquete, en paralelo y con `fail-fast: false`: si uno falla se ve igual el estado de los demás. Usa `npm ci`, que instala exactamente lo del `package-lock.json` |
+| **Integración** (×2 + 1) | `reservations` y `payments` contra **PostgreSQL 16 y RabbitMQ reales**; `notifications` contra RabbitMQ real (job aparte, no usa PostgreSQL) | Los lanza como *service containers* con los puertos y credenciales que esperan los tests |
 | **Integración del caché** | El caché de `restaurants-service` contra un **Redis real** | Prueba la invalidación, que dos instancias compartan el caché y que, si Redis se cae, el servicio siga respondiendo |
-| **Imagen** (×6) | Que cada `Dockerfile` construya | Con caché de capas: si las dependencias no cambiaron no se reinstalan |
-| **Punta a punta** | Levanta **todo** con `docker compose` (bases, RabbitMQ, 5 servicios y el front) y corre la saga de la seña a través del BFF | Es lo único que prueba la red entre contenedores y el proxy de nginx. Si falla, sube los logs de todos los contenedores |
-| **Auditoría** | `npm audit` de las dependencias de producción | **Avisa pero no bloquea**: el paso siempre termina bien, y si hay vulnerabilidades altas deja un aviso amarillo y el detalle en el resumen de la corrida. Se hizo así porque `continue-on-error` igual pinta el commit de rojo, y hoy las 14 vulnerabilidades vienen de NestJS (arreglarlas requiere migrar a su próxima versión mayor) |
+| **Imagen** (×7) | Que cada `Dockerfile` construya | Con caché de capas: si las dependencias no cambiaron no se reinstalan |
+| **Punta a punta** | Levanta **todo** con `docker compose` (bases, RabbitMQ, 6 servicios y el front) y corre la saga de la seña a través del BFF | Es lo único que prueba la red entre contenedores y el proxy de nginx. Si falla, sube los logs de todos los contenedores |
+| **Auditoría** | `npm audit` de las dependencias de producción | **Avisa pero no bloquea**: el paso siempre termina bien, y si hay vulnerabilidades altas deja un aviso amarillo y el detalle en el resumen de la corrida. Se hizo así porque `continue-on-error` igual pinta el commit de rojo. Hoy la auditoría de producción da **0 vulnerabilidades** (ver «Versión de NestJS») |
 
 Los secretos de la corrida punta a punta (`JWT_SECRET`, `GATEWAY_WEBHOOK_SECRET`) se generan al azar en el mismo job y se descartan: no hay que cargar nada en GitHub para que el CI ande.
 
@@ -648,8 +652,71 @@ Para publicar una versión: `git tag v0.1.0 && git push origin v0.1.0`.
 - **Los workflows ya corrieron en GitHub**: el CI quedó en verde y `release.yml` publicó las 6 imágenes en GHCR. Antes de eso los había validado con *actionlint* y corriendo los mismos comandos en una copia limpia, pero la prueba real fue esa primera corrida.
 - Las versiones de las acciones (`actions/checkout@v4`, `docker/build-push-action@v6`...) son las que conocía; Dependabot las mantiene al día.
 - **No hay etapa de deploy**: se publican imágenes, pero no se despliegan a ningún servidor (todavía no hay un destino definido).
-- **No hay lint** en el pipeline porque los paquetes no tienen ESLint configurado todavía.
 - Los Dockerfile usan `npm install` (no `npm ci`), así que las imágenes no usan el lockfile; el CI sí lo usa para las pruebas. Pasarlos a `npm ci` requiere construir desde la raíz del monorepo.
+
+## Notificaciones (`notifications-service`)
+
+Cuando una reserva cambia de estado por algo que el cliente **no hizo él mismo**, le llega un aviso a su bandeja (la campanita del encabezado y la pantalla `/notificaciones`):
+
+| Evento | Aviso al cliente |
+|---|---|
+| `reservation.confirmed` | «Reserva confirmada» (restaurante, personas, fecha y hora) |
+| `reservation.cancelled` por **pago rechazado** | «No se pudo cobrar la seña» |
+| `reservation.cancelled` por **el restaurante** | «El restaurante canceló tu reserva» (y si la seña se devuelve o no) |
+| `reservation.expired` | «Tu reserva venció» |
+| `reservation.cancelled` por el propio cliente | *(nada: lo hizo él)* |
+
+```
+reservations ──(outbox)──▶ RabbitMQ ──reservas.events──▶ notifications ──▶ MongoDB (bandeja)
+                                                              ▲
+ React ──GET /notifications, PATCH /:id/read, POST /read-all──▶ BFF ──▶ ┘   (todo filtrado por el `sub` del JWT)
+```
+
+### Decisiones que vale la pena mirar
+
+- **Los eventos llevan los datos para armar el mensaje** (nombre del restaurante, fecha, personas, zona horaria). Así `notifications` no llama a nadie por HTTP ni depende de que otro servicio esté en pie. El cambio fue **aditivo**: `payments` ignora los campos nuevos.
+- **Idempotencia con un índice único**: RabbitMQ entrega «al menos una vez», así que un evento puede llegar dos veces. El índice único de `eventId` hace que solo cree una notificación; el segundo intento da error `E11000`, que se trata como «ya procesado» y no como falla.
+- **Privacidad**: todo se filtra por el `sub` del JWT. La notificación de otra persona responde 404 (igual que una inexistente), para no revelar que existe.
+- **Se borran solas a los 90 días** (índice TTL de Mongo): una bandeja no es un historial.
+- **La campanita consulta cada 30 s** (polling), solo con sesión y con la pestaña visible. No hay websockets: para un contador alcanza y es mucho más simple.
+- **Si `notifications` se cae**, las reservas siguen andando: los eventos esperan en la cola. El BFF marca su salud como `degraded` y la campanita simplemente no muestra número.
+- La fecha se formatea en la **zona horaria del restaurante**, no en la del servidor (un contenedor corre en UTC).
+
+### Cómo se probó
+
+- Unitarios (127): plantillas de cada tipo, idempotencia, privacidad entre usuarios, filtros y paginación.
+- Integración contra **RabbitMQ real** (9): evento → notificación, duplicados, reintento ante fallo transitorio, DLQ con el motivo y eventos que no le interesan al servicio.
+- Verificaciones de que los tests detectan regresiones (rompiendo a propósito la idempotencia y el filtro por usuario).
+- Frontend: 8 tests nuevos (campanita, lista, marcar una/todas, filtro, error) y revisión visual a 320, 390 y 1280 px.
+- Punta a punta (`e2e/saga.e2e.mjs`, sección 12): pago aprobado, rechazado, cancelación del dueño y cancelación propia contra el sistema completo.
+
+### Limitaciones conocidas
+
+- **Los tests de integración no incluyen MongoDB**: simulan la bandeja en memoria. El comportamiento real de Mongo (índice único, TTL, `updateMany`) solo lo prueba la sección 12 del e2e con `docker compose`.
+- No hay avisos por `payment.refunded` (la devolución de la seña) ni para el dueño del local.
+- Solo bandeja en la app: sin email ni push.
+- El código de mensajería (conexión a RabbitMQ, sobre del evento, reintentos) está **copiado** en cada servicio. Un paquete compartido está pendiente.
+
+## Versión de NestJS y dependencias
+
+Los servicios usan **NestJS 11** (venían de la 10). La auditoría de producción pasó de **14 vulnerabilidades (4 altas) a 0**: `multer`, `lodash`, `qs`, `body-parser`, `uuid` y `file-type` se arreglaron solos al subir `@nestjs/platform-express`, `@nestjs/swagger` y `@nestjs/typeorm`; la última, `js-yaml`, con un `overrides` en el `package.json` raíz.
+
+**Por qué la 11 y no la 12** (la última): los paquetes de la 12 son solo ESM y Jest necesita Node 24.9 o más para cargarlos; hoy todo (CI, Dockerfiles, `engines`) usa Node 20. La 11 sigue siendo CommonJS, pide Node 20 y deja Jest 29 como está. Se decidió midiendo antes: la 11 ya cerraba 12 de las 14, y las 2 restantes (ambas `js-yaml`, a través de `@nestjs/swagger`) se resolvieron con el `override`. Migrar a la 12 queda para cuando se suba Node.
+
+Qué había que revisar de la guía de migración y qué resultó:
+
+| Cambio de la 11 | Nos afecta | Resultado |
+|---|---|---|
+| Express 5: rutas con `*`, `?` opcional, query parser simple | No: no hay rutas con comodines ni consultas anidadas | Sin cambios; los tests HTTP lo confirman |
+| `Reflector.getAllAndOverride` puede devolver `undefined` | Los 5 `roles.guard` | Ya manejaban el caso; compila y los tests de roles pasan |
+| Los hooks de cierre corren en orden inverso al de inicio | `RabbitConnection`, `OutboxRelay`, expiración, caché | Los tests de integración con RabbitMQ y Postgres reales pasan, y un `SIGTERM` cierra el proceso limpio |
+| Módulos dinámicos ya no se deduplican | Tests con `TestingModule` | Sin efecto: los tests pasan sin cambios |
+| `@nestjs/config` 4: orden de lectura | `ConfigService.get` | Sin efecto (solo leemos variables de entorno) |
+| `@nestjs/jwt` 11 tipa `expiresIn` estricto (`'1h'`, `'7d'`) | `auth-service` (`JWT_EXPIRES_IN` viene del entorno) | Único cambio de código: un cast con nombre y comentario |
+
+Una trampa que apareció: el `package-lock.json` viejo seguía fijando la 10 para las dependencias *peer* y quedaban **dos copias** de `@nestjs/common` (una por servicio), lo que rompe los tipos del compilador. Se regeneró el lockfile desde cero; `npm ls @nestjs/common` debe mostrar una sola versión.
+
+Fuera de la auditoría de producción quedan avisos en herramientas de **desarrollo** (`vitest` 3→5 y `jest` 29→30 son versiones mayores). No llegan a ninguna imagen ni se ejecutan en producción; es una tarea aparte.
 
 ## Trazabilidad de logs
 
@@ -722,6 +789,7 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después (front y backend medidos)
 - [x] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
 - [x] **Panel del dueño** (solo reservas del local)
+- [x] **Notificaciones**: bandeja dentro de la app para el cliente (`notifications-service`)
 - [x] **ESLint** en todo el monorepo, con reglas de promesas y hooks, y un job en el CI
 
 ## Estructura
@@ -745,5 +813,6 @@ reservas-platform/
     ├── restaurants-service/
     ├── reservations-service/
     ├── payments-service/
+    ├── notifications-service/
     └── web-bff/
 ```

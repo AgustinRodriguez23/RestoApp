@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../lib/api';
-import type { CreateReservationInput, DaySummary, MenuCategory, MenuItemInput, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
+import type { AppNotification, CreateReservationInput, NotificationsPage, DaySummary, MenuCategory, MenuItemInput, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
 
 /**
  * Todo el estado que vive en el servidor pasa por React Query: caché, reintentos, "cargando" y
@@ -12,6 +12,8 @@ export const keys = {
   overview: (id: string, date: string, partySize: number) => ['overview', id, date, partySize] as const,
   reservations: (params: object) => ['reservations', 'list', params] as const,
   reservation: (id: string) => ['reservations', 'detail', id] as const,
+  notifications: (params: object) => ['notifications', 'list', params] as const,
+  unreadCount: ['notifications', 'unread-count'] as const,
 };
 
 export function useRestaurants(params: { search: string; cuisine: string; page: number }) {
@@ -255,6 +257,53 @@ export function useDeleteMenuItem(restaurantId: string) {
   const refresh = useMenuRefresh();
   return useMutation({
     mutationFn: (itemId: string) => api.delete(`/owner/restaurants/${restaurantId}/menu-items/${itemId}`),
+    onSuccess: refresh,
+  });
+}
+
+/** Bandeja del usuario */
+export const UNREAD_POLL_MS = 30_000;
+
+/**
+ * Contador de la campanita. Se consulta cada tanto (sin websockets): solo con sesión iniciada y solo
+ * mientras la pestaña está a la vista, para no gastar pedidos de balde.
+ */
+export function useUnreadCount(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.unreadCount,
+    queryFn: ({ signal }) => api.get<{ count: number }>('/notifications/unread-count', undefined, signal).then((r) => r.count),
+    enabled,
+    refetchInterval: UNREAD_POLL_MS,
+    refetchOnWindowFocus: true,
+  });
+}
+
+export function useNotifications(params: { unread: boolean; page: number }) {
+  return useQuery({
+    queryKey: keys.notifications(params),
+    queryFn: ({ signal }) =>
+      api.get<NotificationsPage>('/notifications', { unread: params.unread ? 'true' : undefined, page: params.page, limit: 20 }, signal),
+    placeholderData: keepPreviousData,
+  });
+}
+
+function useRefreshNotifications() {
+  const queryClient = useQueryClient();
+  return () => void queryClient.invalidateQueries({ queryKey: ['notifications'] });
+}
+
+export function useMarkNotificationRead() {
+  const refresh = useRefreshNotifications();
+  return useMutation({
+    mutationFn: (id: string) => api.patch<AppNotification>(`/notifications/${id}/read`),
+    onSuccess: refresh,
+  });
+}
+
+export function useMarkAllNotificationsRead() {
+  const refresh = useRefreshNotifications();
+  return useMutation({
+    mutationFn: () => api.post<{ updated: number }>('/notifications/read-all').then((r) => r.data),
     onSuccess: refresh,
   });
 }

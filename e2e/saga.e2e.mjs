@@ -1,6 +1,6 @@
 /**
  * Prueba de punta a punta de la saga de la seña, contra el sistema COMPLETO en marcha
- * (BFF → reservations-service ⇄ RabbitMQ ⇄ payments-service → pasarela simulada).
+ * (BFF → reservations-service ⇄ RabbitMQ ⇄ payments-service → pasarela simulada, y notifications-service con sus avisos).
  *
  * Cómo correrla:
  *   1) npm run up                    (o los servicios con `npm run dev:*` + `npm run infra:up`)
@@ -405,6 +405,71 @@ async function main() {
     const stranger = await register('RESTAURANT_OWNER', 'stranger4');
     check('un dueño ajeno tampoco (403/404)', [403, 404].includes((await http('GET', `${BFF}/owner/restaurants/${restaurantId}/summary?date=${day}`, { token: stranger })).status));
     check('sin fecha: 400', (await http('GET', `${BFF}/owner/restaurants/${restaurantId}/summary`, { token: owner })).status === 400);
+  }
+
+  // ------------------------------------------------------------------ 12
+  // Notificaciones: cada resultado de la saga le llega al cliente como una notificación en su bandeja (vía eventos, no por HTTP)
+  if (!process.env.E2E_RESTAURANT_ID) {
+    section('12. Notificaciones: la bandeja del cliente se llena sola con los eventos');
+    const buyer = await register('CUSTOMER', 'notif'); // cliente propio: así los conteos son exactos
+    const inbox = async (query = '', token = buyer) => (await http('GET', `${BFF}/notifications${query}`, { token })).body;
+    const day = freshDay();
+
+    const empty = await inbox();
+    check('la bandeja arranca vacía', empty.total === 0 && empty.unreadCount === 0, JSON.stringify(empty));
+    check('sin token: 401', (await http('GET', `${BFF}/notifications`)).status === 401);
+
+    // a) pago aprobado → "Reserva confirmada"
+    const ok = (await reserve(slot(day, '12:00'), {}, buyer)).body;
+    await pay(ok.id, 'tok_approved', randomUUID(), buyer);
+    await waitStatus(ok.id, 'CONFIRMED', buyer);
+    await waitFor('notificación de reserva confirmada', async () => (await inbox()).total >= 1);
+    const confirmed = (await inbox()).data.find((n) => n.reservationId === ok.id);
+    check('llega "Reserva confirmada" con el nombre del restaurante', confirmed?.type === 'RESERVATION_CONFIRMED' && confirmed.body.includes('E2E Resto'), JSON.stringify(confirmed));
+    check('nace sin leer', confirmed?.read === false && confirmed?.readAt === null);
+
+    // b) pago rechazado → "No se pudo cobrar la seña"
+    const bad = (await reserve(slot(day, '14:00'), {}, buyer)).body;
+    await pay(bad.id, 'tok_declined', randomUUID(), buyer);
+    await waitStatus(bad.id, 'CANCELLED', buyer);
+    await waitFor('notificación de pago fallido', async () => (await inbox()).data.some((n) => n.reservationId === bad.id));
+    const failedNote = (await inbox()).data.find((n) => n.reservationId === bad.id);
+    check('llega "No se pudo cobrar la seña"', failedNote?.type === 'RESERVATION_PAYMENT_FAILED', JSON.stringify(failedNote));
+
+    // c) cancela el dueño una reserva confirmada → además de su confirmación, llega el aviso de cancelación (con lo que pasa con la seña)
+    const byOwner = (await reserve(slot(day, '16:00'), {}, buyer)).body;
+    await pay(byOwner.id, 'tok_approved', randomUUID(), buyer);
+    await waitStatus(byOwner.id, 'CONFIRMED', buyer);
+    await http('POST', `${BFF}/reservations/${byOwner.id}/cancel`, { token: owner });
+    await waitFor('notificación de cancelación del restaurante', async () => (await inbox()).data.some((n) => n.type === 'RESERVATION_CANCELLED_BY_RESTAURANT'));
+    const cancelledNote = (await inbox()).data.find((n) => n.type === 'RESERVATION_CANCELLED_BY_RESTAURANT');
+    check('llega "El restaurante canceló tu reserva" y dice que la seña se devuelve', !!cancelledNote?.body.includes('devuelve'), JSON.stringify(cancelledNote));
+
+    // d) cancelar uno mismo NO genera aviso (lo hizo la propia persona)
+    const mine = (await reserve(slot(day, '18:00'), {}, buyer)).body;
+    await http('POST', `${BFF}/reservations/${mine.id}/cancel`, { token: buyer });
+    await waitStatus(mine.id, 'CANCELLED', buyer);
+    await new Promise((r) => setTimeout(r, 1500)); // margen para que un evento erróneo llegara
+    check('cancelar uno mismo no genera notificación', !(await inbox()).data.some((n) => n.reservationId === mine.id));
+
+    // e) bandeja: orden, conteo, privacidad, marcar como leída
+    const all = await inbox();
+    // 4 avisos: confirmada, pago rechazado y, de la reserva que canceló el dueño, su confirmación y su cancelación
+    check('hay 4 notificaciones y las 4 sin leer', all.total === 4 && all.unreadCount === 4, JSON.stringify({ total: all.total, unread: all.unreadCount }));
+    check('la más nueva va primero', all.data.every((n, i) => i === 0 || all.data[i - 1].createdAt >= n.createdAt));
+    check('el contador de la campanita coincide', (await http('GET', `${BFF}/notifications/unread-count`, { token: buyer })).body.count === 4);
+
+    const other = await register('CUSTOMER', 'notif-other');
+    check('otro cliente ve su bandeja vacía', (await inbox('', other)).total === 0);
+    check('y no puede marcar la ajena (404)', (await http('PATCH', `${BFF}/notifications/${all.data[0].id}/read`, { token: other })).status === 404);
+    check('un id mal formado da 400', (await http('PATCH', `${BFF}/notifications/no-es-un-id/read`, { token: buyer })).status === 400);
+
+    const one = await http('PATCH', `${BFF}/notifications/${all.data[0].id}/read`, { token: buyer });
+    check('marcar una como leída', one.status === 200 && one.body.read === true && !!one.body.readAt, JSON.stringify(one.body));
+    check('el filtro "sin leer" trae 3', (await inbox('?unread=true')).total === 3);
+    const readAll = await http('POST', `${BFF}/notifications/read-all`, { token: buyer });
+    check('marcar todas devuelve cuántas cambió (3)', readAll.status === 200 && readAll.body.updated === 3, JSON.stringify(readAll.body));
+    check('el contador queda en 0', (await http('GET', `${BFF}/notifications/unread-count`, { token: buyer })).body.count === 0);
   }
 
   // ------------------------------------------------------------------ 7

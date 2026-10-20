@@ -12,8 +12,11 @@ import {
   PaymentSucceededData,
   RefundRequestedData,
   ReservationCancelledData,
+  ReservationConfirmedData,
   ReservationEvents,
+  reservationDetails,
 } from './reservation-events';
+import { BookingPolicy } from './booking-policy';
 
 export const PAYMENT_CONSUMER = 'reservations-service.payments';
 
@@ -36,6 +39,7 @@ export class PaymentEventsConsumer implements OnModuleInit {
     private readonly consumers: EventConsumers,
     private readonly outbox: OutboxService,
     private readonly config: ConfigService,
+    private readonly policy: BookingPolicy,
   ) {
     this.queueName = `${config.get<string>('RABBITMQ_QUEUE_PREFIX') ?? ''}${PAYMENT_CONSUMER}`;
   }
@@ -79,8 +83,8 @@ export class PaymentEventsConsumer implements OnModuleInit {
         reservationId: reservation.id,
         customerId: reservation.customerId,
         restaurantId: reservation.restaurantId,
-        startsAt: reservation.startsAt.toISOString(),
-      });
+        ...reservationDetails(reservation, this.policy.timeZone),
+      } satisfies ReservationConfirmedData);
       this.logger.log(`Reserva ${reservation.id} confirmada por el pago ${data.paymentId}`);
       return;
     }
@@ -119,6 +123,7 @@ export class PaymentEventsConsumer implements OnModuleInit {
       reason: 'PAYMENT_FAILED',
       refundable: false,
       depositCents: reservation.depositCents,
+      ...reservationDetails(reservation, this.policy.timeZone),
     } satisfies ReservationCancelledData);
     this.logger.log(`Reserva ${reservation.id} cancelada: el pago ${data.paymentId} falló (${data.reason})`);
   }

@@ -24,7 +24,7 @@ import { JwtPayload } from '../security/jwt-payload';
 import { Role } from '../security/role.enum';
 import { BookingPolicy } from './booking-policy';
 import { DepositPolicy } from './deposit-policy';
-import { ReservationEvents } from './reservation-events';
+import { ReservationCancelledData, ReservationConfirmedData, ReservationEvents, reservationDetails } from './reservation-events';
 import { ListReservationsQueryDto, ListRestaurantReservationsQueryDto } from './dto/list-reservations-query.dto';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { Reservation } from './entities/reservation.entity';
@@ -116,6 +116,7 @@ export class ReservationsService {
               tableNumber: table.number,
               customerId: user.sub,
               customerName: user.name?.slice(0, 100) ?? null,
+              restaurantName: restaurant.name ? restaurant.name.slice(0, 100) : null,
               partySize: dto.partySize,
               startsAt,
               endsAt,
@@ -245,7 +246,8 @@ export class ReservationsService {
           reason: byOwner ? 'CANCELLED_BY_OWNER' : 'CANCELLED_BY_CUSTOMER',
           refundable: this.deposit.isRefundable(reservation.startsAt, byOwner),
           depositCents: reservation.depositCents,
-        }),
+          ...reservationDetails(reservation, this.policy.timeZone),
+        } satisfies ReservationCancelledData),
     );
   }
 
@@ -344,12 +346,12 @@ export class ReservationsService {
     return this.findOrFail(reservation.id);
   }
 
-  private confirmedData(reservation: Reservation) {
+  private confirmedData(reservation: Reservation): ReservationConfirmedData {
     return {
       reservationId: reservation.id,
       customerId: reservation.customerId,
       restaurantId: reservation.restaurantId,
-      startsAt: reservation.startsAt.toISOString(),
+      ...reservationDetails(reservation, this.policy.timeZone),
     };
   }
 

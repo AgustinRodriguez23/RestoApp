@@ -231,6 +231,46 @@ services:
     ports:
       - "${PAYMENTS_PORT:-3004}:3004"
 
+  mongo-notifications:
+    image: mongo:7
+    container_name: mongo-notifications
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${NOTIFICATIONS_MONGO_USER:-notifications}
+      MONGO_INITDB_ROOT_PASSWORD: ${NOTIFICATIONS_MONGO_PASSWORD:-notifications_password}
+    ports:
+      # Puerto 27019 en tu máquina para no chocar con mongo-restaurants (27018) ni con un MongoDB local
+      - "${NOTIFICATIONS_MONGO_PORT:-27019}:27017"
+    volumes:
+      - mongo-notifications-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  notifications-service:
+    build:
+      context: ./services/notifications-service
+    container_name: notifications-service
+    labels:
+      logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
+    restart: unless-stopped
+    depends_on:
+      mongo-notifications:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PORT: 3005
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Si cambiás la contraseña por una con caracteres especiales, codificala (URL-encode)
+      MONGO_URI: mongodb://${NOTIFICATIONS_MONGO_USER:-notifications}:${NOTIFICATIONS_MONGO_PASSWORD:-notifications_password}@mongo-notifications:27017/${NOTIFICATIONS_MONGO_DB:-notifications_db}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:-reservas_password}@rabbitmq:5672
+    ports:
+      - "${NOTIFICATIONS_PORT:-3005}:3005"
+
   web-bff:
     build:
       context: ./services/web-bff
@@ -243,6 +283,7 @@ services:
       - restaurants-service
       - reservations-service
       - payments-service
+      - notifications-service
     environment:
       PORT: 3000
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -252,6 +293,7 @@ services:
       RESTAURANTS_SERVICE_URL: http://restaurants-service:3002
       RESERVATIONS_SERVICE_URL: http://reservations-service:3003
       PAYMENTS_SERVICE_URL: http://payments-service:3004
+      NOTIFICATIONS_SERVICE_URL: http://notifications-service:3005
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-3000}
     ports:
@@ -264,6 +306,8 @@ services:
     image: grafana/k6:0.55.0
     profiles: ["perf"]
     user: root # para poder escribir los resultados en ./perf/results (carpeta de tu máquina)
+    # Los scripts se indican con rutas RELATIVAS a esta carpeta. Con rutas que empiezan con "/" Git Bash (Windows)
+    # las convierte a «C:/Program Files/Git/...» y k6 no encuentra el archivo.
     working_dir: /perf
     environment:
       BASE_URL: http://web-bff:3000
@@ -333,6 +377,7 @@ volumes:
   postgres-payments-data:
   postgres-auth-data:
   mongo-restaurants-data:
+  mongo-notifications-data:
   postgres-reservations-data:
   loki-data:
   grafana-data:

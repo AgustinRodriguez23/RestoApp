@@ -3,7 +3,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { settle } from '../common/settle';
 import { UpstreamClient, UpstreamName } from '../upstream/upstream-client';
 
-const UPSTREAMS: UpstreamName[] = ['auth', 'restaurants', 'reservations', 'payments'];
+const UPSTREAMS: UpstreamName[] = ['auth', 'restaurants', 'reservations', 'payments', 'notifications'];
 
 @ApiTags('health')
 @Controller('health')

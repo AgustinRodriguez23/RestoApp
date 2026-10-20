@@ -157,3 +157,22 @@ export interface CreateReservationInput {
   startsAt: string;
   notes?: string;
 }
+
+export type NotificationType = 'RESERVATION_CONFIRMED' | 'RESERVATION_CANCELLED_BY_RESTAURANT' | 'RESERVATION_PAYMENT_FAILED' | 'RESERVATION_EXPIRED';
+
+export interface AppNotification {
+  id: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  reservationId: string;
+  restaurantId: string;
+  read: boolean;
+  readAt: string | null;
+  createdAt: string;
+}
+
+/** La lista trae además cuántas hay sin leer en total (no solo en esta página). */
+export interface NotificationsPage extends Page<AppNotification> {
+  unreadCount: number;
+}

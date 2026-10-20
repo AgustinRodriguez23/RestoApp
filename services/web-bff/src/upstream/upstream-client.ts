@@ -9,7 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { currentCorrelationId } from '../observability/request-context';
 
-export type UpstreamName = 'auth' | 'restaurants' | 'reservations' | 'payments';
+export type UpstreamName = 'auth' | 'restaurants' | 'reservations' | 'payments' | 'notifications';
 
 /** Lo que el BFF reenvía del request original a los servicios. */
 export interface CallContext {
@@ -39,12 +39,14 @@ const DEFAULT_URLS: Record<UpstreamName, string> = {
   restaurants: 'http://localhost:3002',
   reservations: 'http://localhost:3003',
   payments: 'http://localhost:3004',
+  notifications: 'http://localhost:3005',
 };
 const URL_VARS: Record<UpstreamName, string> = {
   auth: 'AUTH_SERVICE_URL',
   restaurants: 'RESTAURANTS_SERVICE_URL',
   reservations: 'RESERVATIONS_SERVICE_URL',
   payments: 'PAYMENTS_SERVICE_URL',
+  notifications: 'NOTIFICATIONS_SERVICE_URL',
 };
 
 /** Falla que vale la pena reintentar (si el pedido es seguro de repetir). */

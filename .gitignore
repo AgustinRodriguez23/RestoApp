@@ -11,3 +11,6 @@ logs/*
 
 # Resultados crudos de k6 (se regeneran; lo que vale va resumido en el README)
 perf/results/*.json
+
+# Instrucciones personales para Claude Code (CLAUDE.md sí se sube)
+CLAUDE.local.md

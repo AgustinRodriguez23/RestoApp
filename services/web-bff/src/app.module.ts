@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './auth/auth.module';
 import { HealthController } from './health/health.controller';
+import { NotificationsModule } from './notifications/notifications.module';
 import { OwnerModule } from './owner/owner.module';
 import { OverviewModule } from './overview/overview.module';
 import { ReservationsModule } from './reservations/reservations.module';
@@ -17,6 +18,7 @@ import { UpstreamModule } from './upstream/upstream.module';
     ReservationsModule,
     OverviewModule,
     OwnerModule,
+    NotificationsModule,
   ],
   controllers: [HealthController],
 })
