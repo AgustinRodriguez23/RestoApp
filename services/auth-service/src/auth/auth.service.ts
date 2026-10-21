@@ -1,4 +1,5 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { Role } from '../users/role.enum';
@@ -16,9 +17,16 @@ export class AuthService {
   constructor(
     private readonly users: UsersService,
     private readonly jwt: JwtService,
+    private readonly config: ConfigService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponseDto> {
+    // El registro es público: si cualquiera pudiera pedir el rol de dueño, el rol no protegería nada.
+    // Se habilita solo en desarrollo y en el e2e (ALLOW_OWNER_SELF_REGISTER=true).
+    if (dto.role === Role.RESTAURANT_OWNER && this.config.get<string>('ALLOW_OWNER_SELF_REGISTER') !== 'true') {
+      throw new ForbiddenException('El alta de dueños de restaurante no está habilitada');
+    }
+
     const email = dto.email.toLowerCase();
 
     if (await this.users.findByEmail(email)) {
