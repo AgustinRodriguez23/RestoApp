@@ -41,6 +41,7 @@ services:
       DB_SYNCHRONIZE: "true"
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      ALLOW_OWNER_SELF_REGISTER: ${ALLOW_OWNER_SELF_REGISTER:-false}
     ports:
       - "${AUTH_PORT:-3001}:3001"
 

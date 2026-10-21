@@ -1,4 +1,5 @@
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import * as bcrypt from 'bcryptjs';
@@ -13,6 +14,7 @@ describe('AuthService', () => {
     Pick<UsersService, 'findByEmail' | 'findByEmailWithPassword' | 'findById' | 'create'>
   >;
   let jwt: { signAsync: jest.Mock };
+  let config: { get: jest.Mock };
 
   const baseUser = {
     id: 'user-1',
@@ -29,12 +31,14 @@ describe('AuthService', () => {
       create: jest.fn(),
     };
     jwt = { signAsync: jest.fn().mockResolvedValue('signed-token') };
+    config = { get: jest.fn().mockReturnValue(undefined) };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
         { provide: UsersService, useValue: users },
         { provide: JwtService, useValue: jwt },
+        { provide: ConfigService, useValue: config },
       ],
     }).compile();
 
@@ -75,18 +79,30 @@ describe('AuthService', () => {
       expect(users.create).not.toHaveBeenCalled();
     });
 
-    it('respeta el rol pedido', async () => {
+    const ownerDto = { email: 'dueno@example.com', name: 'Dueño', password: 'Password123', role: Role.RESTAURANT_OWNER };
+
+    it('rechaza con 403 el alta de un dueño si ALLOW_OWNER_SELF_REGISTER no está activado', async () => {
+      await expect(service.register(ownerDto)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(users.create).not.toHaveBeenCalled();
+    });
+
+    it('con ALLOW_OWNER_SELF_REGISTER=true respeta el rol de dueño', async () => {
+      config.get.mockReturnValue('true');
       users.findByEmail.mockResolvedValue(null);
       users.create.mockResolvedValue({ ...baseUser, role: Role.RESTAURANT_OWNER } as User);
 
-      await service.register({
-        email: 'dueno@example.com',
-        name: 'Dueño',
-        password: 'Password123',
-        role: Role.RESTAURANT_OWNER,
-      });
+      await service.register(ownerDto);
 
       expect(users.create.mock.calls[0][0].role).toBe(Role.RESTAURANT_OWNER);
+    });
+
+    it('pedir explícitamente CUSTOMER siempre se puede', async () => {
+      users.findByEmail.mockResolvedValue(null);
+      users.create.mockResolvedValue(baseUser);
+
+      await service.register({ ...ownerDto, role: Role.CUSTOMER });
+
+      expect(users.create.mock.calls[0][0].role).toBe(Role.CUSTOMER);
     });
   });
 

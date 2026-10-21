@@ -79,7 +79,7 @@ npm run obs:up              # Loki + Alloy + Grafana (ver «Trazabilidad de logs
 
 ### Probar el flujo completo
 
-1. En el Swagger de **auth**, registrá un usuario con `"role": "RESTAURANT_OWNER"` y copiá el `accessToken`.
+1. En el Swagger de **auth**, registrá un usuario con `"role": "RESTAURANT_OWNER"` y copiá el `accessToken` (hace falta `ALLOW_OWNER_SELF_REGISTER=true`, que ya viene en `.env.example`; sin esa variable el servicio responde 403).
 2. En el Swagger de **restaurants**, tocá **Authorize** y pegá ese token (el mismo token sirve en los dos servicios).
 3. Creá un restaurante (`POST /restaurants`) con mesas y horarios, agregale platos (`POST /restaurants/{id}/menu-items`) y mirá la carta pública (`GET /restaurants/{id}/menu`).
 4. En el Swagger de **reservations** consultá `GET /availability` (público) con el id del restaurante, un día y la cantidad de personas.
@@ -159,7 +159,7 @@ npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda m
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| POST | `/auth/register` | Registra un usuario (`CUSTOMER` o `RESTAURANT_OWNER`) y devuelve un JWT |
+| POST | `/auth/register` | Registra un usuario y devuelve un JWT. Es `CUSTOMER` salvo que se pida `RESTAURANT_OWNER` y esté activado `ALLOW_OWNER_SELF_REGISTER` (si no, 403: el registro es público y cualquiera se haría dueño) |
 | POST | `/auth/login` | Valida credenciales y devuelve un JWT |
 | GET | `/auth/me` | Datos del usuario autenticado (`Authorization: Bearer <token>`) |
 | GET | `/health` | Estado del servicio y de su base de datos |
