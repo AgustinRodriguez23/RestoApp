@@ -227,6 +227,8 @@ services:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:-reservas_password}@rabbitmq:5672
       # Pasarela: 'simulated' (la de desarrollo). Más adelante, la real elegida por esta variable.
       PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-simulated}
+      # La imagen corre con NODE_ENV=production y la simulada pide aceptarse a conciencia (ver .env.example)
+      ALLOW_SIMULATED_GATEWAY: ${ALLOW_SIMULATED_GATEWAY:-false}
       GATEWAY_WEBHOOK_SECRET: ${GATEWAY_WEBHOOK_SECRET:?Definí GATEWAY_WEBHOOK_SECRET en el archivo .env}
       SIMULATED_WEBHOOK_DELAY_MS: ${SIMULATED_WEBHOOK_DELAY_MS:-3000}
     ports:

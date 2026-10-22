@@ -153,6 +153,15 @@ describe('createGateway (elección de la pasarela por configuración)', () => {
     expect(() => createGateway(config({ PAYMENT_PROVIDER: 'mercadopago', GATEWAY_WEBHOOK_SECRET: 's' }))).toThrow(/no está soportado.*simulated/);
   });
 
+  it('en producción la simulada no arranca si no se aceptó a conciencia', () => {
+    expect(() => createGateway(config({ NODE_ENV: 'production', GATEWAY_WEBHOOK_SECRET: 's' }))).toThrow(/ALLOW_SIMULATED_GATEWAY/);
+  });
+
+  it('en producción la simulada arranca con ALLOW_SIMULATED_GATEWAY=true (demo)', () => {
+    const env = { NODE_ENV: 'production', ALLOW_SIMULATED_GATEWAY: 'true', GATEWAY_WEBHOOK_SECRET: 's' };
+    expect(createGateway(config(env)).name).toBe('simulated');
+  });
+
   it('sin secreto de webhook no arranca (no se acepta un secreto por defecto)', () => {
     expect(() => createGateway(config({}))).toThrow(/GATEWAY_WEBHOOK_SECRET/);
   });

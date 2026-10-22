@@ -14,6 +14,14 @@ export function createGateway(config: ConfigService): PaymentGateway {
 
   switch (provider) {
     case 'simulated': {
+      // La simulada aprueba cualquier pago con tok_approved: en producción sería cobrar gratis.
+      // Hay que aceptarla a conciencia (ALLOW_SIMULATED_GATEWAY=true), por ejemplo en una demo.
+      if (config.get<string>('NODE_ENV') === 'production' && config.get<string>('ALLOW_SIMULATED_GATEWAY') !== 'true') {
+        throw new Error(
+          'La pasarela simulada no se puede usar con NODE_ENV=production: configurá una pasarela real en PAYMENT_PROVIDER, ' +
+            'o poné ALLOW_SIMULATED_GATEWAY=true si es una demo y los pagos son de mentira.',
+        );
+      }
       const port = config.get<string>('PORT') ?? '3004';
       return new SimulatedGateway({
         webhookSecret: config.getOrThrow<string>('GATEWAY_WEBHOOK_SECRET'),
