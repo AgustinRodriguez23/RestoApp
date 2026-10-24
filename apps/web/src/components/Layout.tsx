@@ -32,7 +32,7 @@ export function Layout() {
       <header className="bg-ink text-white">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-3">
           <Link to="/" className="font-display text-xl font-bold tracking-tight">
-            Reservas
+            RestoApp
           </Link>
           {/* En móvil la navegación baja a su propia fila (logo y sesión arriba) y, si no entra, se desliza de costado */}
           <nav aria-label="Principal" className="-mx-2 order-last flex w-full gap-0.5 sm:gap-1 overflow-x-auto sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible">
