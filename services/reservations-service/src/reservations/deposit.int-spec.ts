@@ -245,12 +245,15 @@ describe('reservations-service: seña y saga (integración con PostgreSQL y Rabb
       sendRaw('payment.succeeded', envelope);
       sendRaw('payment.succeeded', envelope);
       sendRaw('payment.succeeded', envelope);
-      // Otro evento (distinto) hace de señal: cuando se procesó, los duplicados anteriores ya pasaron
+      // El consumidor procesa varios mensajes en paralelo (prefetch), así que no hay orden garantizado:
+      // primero se espera la confirmación y recién después se manda la señal.
+      await waitFor(async () => (await status(body.id)) === 'CONFIRMED');
+      // Las copias 2 y 3 esperaban el commit de la primera (índice único de processed_messages) y se resuelven
+      // enseguida. Otro evento hace de señal: cuando se procesó, esas copias ya pasaron hace rato.
       const other = await book('c2', at('21:30'));
       sendPayment('payment.succeeded', other.body.id, 'pay-2');
       await waitFor(async () => (await status(other.body.id, 'c2')) === 'CONFIRMED');
 
-      expect(await status(body.id)).toBe('CONFIRMED');
       expect(await outboxOf('reservation.confirmed', body.id)).toHaveLength(1);
     });
 
