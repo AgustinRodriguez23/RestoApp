@@ -72,7 +72,7 @@ export class AvailabilityService {
       .filter((start) => start.getTime() > now && start.getTime() <= latest);
     if (candidates.length === 0) return { ...base, slots: [] };
 
-    // Una sola consulta con todas las reservas confirmadas que tocan la ventana del día
+    // Una sola consulta con todas las reservas que retienen mesa y tocan la ventana del día
     const windowStart = candidates[0];
     const windowEnd = new Date(candidates[candidates.length - 1].getTime() + durationMs);
     const busy = await this.repo.find({

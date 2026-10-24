@@ -218,7 +218,7 @@ npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda m
 - **Duración fija (90 min) y grilla de 30 min**: simplifica la disponibilidad. Se cambia con `RESERVATION_DURATION_MINUTES` y `RESERVATION_SLOT_STEP_MINUTES`. También `RESERVATION_MAX_ADVANCE_DAYS` (90 por defecto).
 - **Zona horaria**: los horarios del restaurante son hora local (`RESTAURANT_TIME_ZONE`, por defecto Buenos Aires) y las reservas se guardan como instantes UTC (`timestamptz`). Se maneja con `Intl`, sin librerías, incluyendo los turnos que cruzan la medianoche y los cambios de horario de verano. Por ahora es **una sola zona para toda la plataforma**.
 - **Máquina de estados**: `PENDING_PAYMENT → CONFIRMED | CANCELLED | EXPIRED` y `CONFIRMED → CANCELLED | COMPLETED | NO_SHOW`; el resto son finales. Cada transición es un `UPDATE ... WHERE id = ? AND status = <el que leí>`: si dos requests compiten (por ejemplo, dos cancelaciones), solo una gana y la otra recibe 409.
-- **Comunicación síncrona con restaurants-service** (HTTP con timeout de 3 s y un reintento) para conocer mesas y horarios. Si no responde, 503; si responde algo inesperado, 502. Sin caché por ahora.
+- **Comunicación síncrona con restaurants-service** (HTTP con timeout de 3 s y un reintento) para conocer mesas y horarios. Si no responde, 503; si responde algo inesperado, 502. reservations no guarda copia de esos datos: cada consulta va a restaurants-service, que desde la Fase 8 sí cachea sus lecturas en Redis.
 - **Recursos ajenos devuelven 404, no 403**: no se revela que una reserva de otra persona existe.
 - **El cliente de una reserva siempre es el usuario del token**; el DTO rechaza `customerId`, `status` o `tableNumber` (*mass assignment*).
 
