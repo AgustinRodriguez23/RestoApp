@@ -10,7 +10,8 @@ import { CreateRestaurantDto, UpdateRestaurantDto } from './dto/restaurant-input
 /**
  * Panel del dueño. El BFF solo reenvía: quién es dueño de qué lo decide cada servicio
  * (restaurants-service para "mis restaurantes", reservations-service para ver y modificar las reservas
- * de un local), así que un cliente o un dueño ajeno recibe el 403 del servicio y no hay reglas duplicadas.
+ * de un local), así que un cliente o un dueño ajeno recibe el error del servicio y no hay reglas duplicadas
+ * (403 en restaurants-service; 404 en reservations-service, para no revelar que la reserva existe).
  * Para cancelar se reutiliza POST /reservations/:id/cancel, que ya acepta al dueño.
  */
 @ApiTags('owner')

@@ -1,6 +1,6 @@
 name: CI
 
-# Corre en cada pull request y en cada push a una rama que no sea main.
+# Corre en cada pull request.
 # En main lo llama release.yml (workflow_call): así las imágenes solo se publican si todo esto pasó.
 on:
   pull_request:
@@ -20,7 +20,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Lint: una sola configuración (eslint.config.mjs) para todo el monorepo.
-  # Cero avisos permitidos. Pegar dentro de `jobs:`, justo ANTES del job `unit`.
+  # Cero avisos permitidos.
   # ---------------------------------------------------------------------------
   lint:
     name: Lint
@@ -154,7 +154,7 @@ jobs:
       - name: Tests de integración
         run: npm run test:integration -w notifications-service
 
-    # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
   # Integración del caché (Fase 8): contra un Redis real, no simulado.
   # Va aparte porque restaurants-service no usa PostgreSQL (su base es MongoDB, que sus tests no necesitan).
   # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
   # ---------------------------------------------------------------------------
-  # Prueba de punta a punta: levanta TODO con docker compose (bases, RabbitMQ, los 5 servicios y el front)
+  # Prueba de punta a punta: levanta TODO con docker compose (bases, RabbitMQ, los 6 servicios y el front)
   # y corre la saga de la seña a través del BFF. Es lo único que prueba la red entre contenedores.
   # ---------------------------------------------------------------------------
   e2e:

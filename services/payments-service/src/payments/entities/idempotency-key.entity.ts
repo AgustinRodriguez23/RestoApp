@@ -18,7 +18,10 @@ export class IdempotencyKey {
   @Column({ name: 'request_hash', type: 'varchar', length: 64 })
   requestHash: string;
 
-  /** Null mientras el primer pedido todavía se está procesando. */
+  /**
+   * Null solo dentro de la transacción, entre el INSERT de la clave y el guardado de la respuesta.
+   * Nadie de afuera ve la fila así: otro pedido con la misma clave espera al commit (ver IdempotencyService).
+   */
   @Column({ name: 'response_status', type: 'int', nullable: true })
   responseStatus: number | null;
 
