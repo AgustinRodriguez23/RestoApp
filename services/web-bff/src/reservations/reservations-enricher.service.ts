@@ -14,13 +14,19 @@ interface HasRestaurantId {
   restaurantId: string;
 }
 
-const MAX_PARALLEL = 10;
+/** Lo que aceptan como máximo los pedidos por lote de restaurants y payments: una página entera de "Mis reservas". */
+const MAX_IDS = 50;
+
+/** Parte una lista en tandas de MAX_IDS (con la página de "Mis reservas", que es de 50, siempre hay una sola). */
+function batches<T>(items: T[]): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += MAX_IDS) result.push(items.slice(i, i + MAX_IDS));
+  return result;
+}
 
 /**
- * Una reserva solo guarda el `restaurantId`. Para mostrar "Reserva en La Parrilla" el frontend
- * tendría que pedir cada restaurante aparte. Acá se hace una vez por restaurante distinto
- * (10 reservas en el mismo local = 1 consulta, no 10), con un máximo de consultas simultáneas
- * para no saturar restaurants-service.
+ * Una reserva solo guarda el `restaurantId`. Para mostrar "Reserva en La Parrilla" se piden todos los restaurantes
+ * de la lista en UN pedido (`GET /restaurants?ids=…`), no uno por restaurante.
  *
  * El nombre es un adorno: si no se puede obtener, la reserva se devuelve igual con `restaurant: null`.
  */
@@ -32,16 +38,22 @@ export class ReservationsEnricher {
     const ids = [...new Set(reservations.map((r) => r.restaurantId))];
     const found = new Map<string, RestaurantSummary>();
 
-    for (let i = 0; i < ids.length; i += MAX_PARALLEL) {
-      const chunk = ids.slice(i, i + MAX_PARALLEL);
-      const results = await Promise.all(
-        chunk.map((id) => settle(this.upstream.call<{ id?: string; _id?: string; name: string }>('restaurants', { path: `/restaurants/${id}` }, ctx))),
-      );
-      results.forEach((result, index) => {
-        if (result.ok && typeof result.value?.name === 'string') {
-          found.set(chunk[index], { id: chunk[index], name: result.value.name });
-        }
-      });
+    const results = await Promise.all(
+      batches(ids).map((chunk) =>
+        settle(
+          this.upstream.call<{ data: Array<{ id: string; name: string }> }>(
+            'restaurants',
+            { path: '/restaurants', query: { ids: chunk.join(','), limit: chunk.length } },
+            ctx,
+          ),
+        ),
+      ),
+    );
+    for (const result of results) {
+      if (!result.ok) continue;
+      for (const r of result.value.data ?? []) {
+        if (typeof r.name === 'string') found.set(r.id, { id: r.id, name: r.name });
+      }
     }
 
     return reservations.map((r) => ({ ...r, restaurant: found.get(r.restaurantId) ?? null }));
@@ -51,6 +63,7 @@ export class ReservationsEnricher {
 /** Estado del pago de una reserva, tal cual lo informa payments-service. */
 export interface PaymentSummary {
   id: string;
+  reservationId: string;
   status: string;
   amountCents: number;
   currency: string;
@@ -67,25 +80,28 @@ interface MaybeDeposit {
 
 /**
  * Suma a cada reserva con seña el estado de su pago, para que la pantalla muestre "Pagar ahora" o
- * "Pago rechazado" sin pedirlo aparte. Es un adorno: si payments-service no responde (o el pago todavía
- * no se creó, porque se genera de forma asíncrona al reservar), la reserva sale igual con `payment: null`.
+ * "Pago rechazado" sin pedirlo aparte. Todos en UN pedido (`GET /payments?reservationIds=…`): antes era uno por
+ * reserva, y una página de 50 reservas eran 50 llamadas.
+ *
+ * Es un adorno: si payments-service no responde (o el pago todavía no se creó, porque se genera de forma asíncrona
+ * al reservar), la reserva sale igual con `payment: null`.
  */
 @Injectable()
 export class PaymentsEnricher {
   constructor(private readonly upstream: UpstreamClient) {}
 
   async attachPayments<T extends MaybeDeposit>(reservations: T[], ctx: CallContext): Promise<WithPayment<T>[]> {
-    const withDeposit = reservations.filter((r) => (r.depositCents ?? 0) > 0);
+    const ids = reservations.filter((r) => (r.depositCents ?? 0) > 0).map((r) => r.id);
     const found = new Map<string, PaymentSummary>();
 
-    for (let i = 0; i < withDeposit.length; i += MAX_PARALLEL) {
-      const chunk = withDeposit.slice(i, i + MAX_PARALLEL);
-      const results = await Promise.all(
-        chunk.map((r) => settle(this.upstream.call<PaymentSummary>('payments', { path: `/payments/by-reservation/${r.id}` }, ctx))),
-      );
-      results.forEach((result, index) => {
-        if (result.ok) found.set(chunk[index].id, result.value);
-      });
+    const results = await Promise.all(
+      batches(ids).map((chunk) =>
+        settle(this.upstream.call<PaymentSummary[]>('payments', { path: '/payments', query: { reservationIds: chunk.join(',') } }, ctx)),
+      ),
+    );
+    for (const result of results) {
+      if (!result.ok) continue;
+      for (const payment of result.value ?? []) found.set(payment.reservationId, payment);
     }
 
     return reservations.map((r) => ({ ...r, payment: found.get(r.id) ?? null }));

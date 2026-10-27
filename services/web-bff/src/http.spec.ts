@@ -32,6 +32,12 @@ describe('web-bff (HTTP + servicios falsos)', () => {
   const authz = (sub?: string) => `Bearer ${token(sub)}`;
   const server = () => request(app.getHttpServer());
   const query = (call: RecordedCall) => Object.fromEntries(new URL(call.path, 'http://x').searchParams);
+  /** restaurants-service falso para el pedido por lote (GET /restaurants?ids=…): devuelve los que conoce de la lista. */
+  const restaurantsNamed = (known: Record<string, string>) => (call: RecordedCall) => {
+    if (call.method !== 'GET' || !call.path.startsWith('/restaurants?')) return fail(404, 'no existe');
+    const ids = (query(call).ids ?? '').split(',');
+    return ok({ data: ids.filter((id) => id in known).map((id) => ({ id, name: known[id] })) });
+  };
 
   beforeAll(async () => {
     [auth, restaurants, reservations, payments, notifications] = await Promise.all([
@@ -316,11 +322,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
   describe('reservas', () => {
     const body = { restaurantId: RID, partySize: 3, startsAt: '2026-10-16T21:00:00-03:00' };
     const reservation = (id: string, restaurantId: string, startsAt = '2026-10-16T21:00:00-03:00') => ({ id, restaurantId, startsAt, status: 'CONFIRMED' });
-    const names = (call: RecordedCall) => {
-      if (call.path === `/restaurants/${RID}`) return ok({ id: RID, name: 'La Parrilla', cuisine: 'x' });
-      if (call.path === `/restaurants/${RID2}`) return ok({ id: RID2, name: 'Pasta Nostra' });
-      return fail(404, 'no existe');
-    };
+    const names = restaurantsNamed({ [RID]: 'La Parrilla', [RID2]: 'Pasta Nostra' });
 
     it('crear reserva reenvía el body y el token, y agrega el nombre del restaurante', async () => {
       reservations.handler = () => ({ status: 201, body: reservation(RES_ID, RID) });
@@ -361,7 +363,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       expect(reservations.calls).toHaveLength(0);
     });
 
-    it('"mine" agrega el nombre del restaurante y consulta cada restaurante UNA vez', async () => {
+    it('"mine" agrega el nombre del restaurante pidiendo todos en UN pedido, sin repetir ids', async () => {
       reservations.handler = () =>
         ok({ data: [reservation('a', RID), reservation('b', RID2), reservation('c', RID)], page: 1, limit: 10, total: 3, totalPages: 1 });
       restaurants.handler = names;
@@ -371,7 +373,8 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ page: 1, total: 3, totalPages: 1 });
       expect(res.body.data.map((r: { restaurant: { name: string } }) => r.restaurant.name)).toEqual(['La Parrilla', 'Pasta Nostra', 'La Parrilla']);
-      expect(restaurants.calls).toHaveLength(2); // no 3
+      expect(restaurants.calls).toHaveLength(1); // antes: uno por restaurante
+      expect(query(restaurants.calls[0])).toEqual({ ids: `${RID},${RID2}`, limit: '2' });
     });
 
     it('si no se puede obtener el nombre, la reserva igual se devuelve con restaurant: null', async () => {
@@ -532,18 +535,28 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       const withDeposit = (id: string, depositCents: number) => ({ id, restaurantId: RID, startsAt: '2026-10-16T21:00:00-03:00', status: 'PENDING_PAYMENT', depositCents });
 
       beforeEach(() => {
-        restaurants.handler = () => ok({ id: RID, name: 'La Parrilla' });
+        restaurants.handler = restaurantsNamed({ [RID]: 'La Parrilla' });
       });
 
-      it('"mine" suma el pago de las reservas con seña, y solo consulta las que tienen seña', async () => {
-        reservations.handler = () => ok({ data: [withDeposit('11111111-1111-4111-8111-111111111111', 15000), withDeposit('22222222-2222-4222-8222-222222222222', 0)] });
-        payments.handler = (call) => (call.path.endsWith('11111111-1111-4111-8111-111111111111') ? ok(payment()) : fail(404, 'x'));
+      it('"mine" suma el pago de las reservas con seña en UN pedido, y solo pide las que tienen seña', async () => {
+        const [A, B, C] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'];
+        reservations.handler = () => ok({ data: [withDeposit(A, 15000), withDeposit(B, 0), withDeposit(C, 15000)] });
+        payments.handler = () => ok([{ ...payment(), reservationId: A }, { ...payment('SUCCEEDED'), id: 'pay-c', reservationId: C }]);
 
         const res = await server().get('/reservations/mine').set('Authorization', authz());
 
-        expect(res.body.data[0].payment).toMatchObject({ id: PAY_ID, status: 'PENDING' });
-        expect(res.body.data[1].payment).toBeNull();
-        expect(payments.calls).toHaveLength(1);
+        expect(res.body.data.map((r: { payment: { status: string } | null }) => r.payment?.status ?? null)).toEqual(['PENDING', null, 'SUCCEEDED']);
+        expect(payments.calls).toHaveLength(1); // antes: uno por reserva con seña
+        expect(query(payments.calls[0])).toEqual({ reservationIds: `${A},${C}` }); // B no tiene seña: ni se pide
+      });
+
+      it('una reserva sin pago en la respuesta (todavía no se creó, o no es del usuario) sale con payment: null', async () => {
+        reservations.handler = () => ok({ data: [withDeposit('11111111-1111-4111-8111-111111111111', 15000)] });
+        payments.handler = () => ok([]);
+
+        const res = await server().get('/reservations/mine').set('Authorization', authz());
+
+        expect(res.body.data[0].payment).toBeNull();
       });
 
       it('si payments-service está caído, la reserva sale igual con payment: null', async () => {
@@ -575,7 +588,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
 
     beforeEach(() => {
       auth.handler = () => ok({ id: 'user-1', name: 'Ana' });
-      restaurants.handler = () => ok({ id: RID, name: 'La Parrilla' });
+      restaurants.handler = restaurantsNamed({ [RID]: 'La Parrilla' });
     });
 
     it('devuelve el perfil y las próximas reservas: futuras, de la más cercana a la más lejana', async () => {
@@ -622,7 +635,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
         call.path.includes('PENDING_PAYMENT')
           ? ok({ data: [{ id: 'p1', restaurantId: RID, startsAt: inHours(30), status: 'PENDING_PAYMENT', depositCents: 15000 }] })
           : mine(inHours(2));
-      payments.handler = () => ok({ id: 'pay-1', status: 'PENDING', amountCents: 15000 });
+      payments.handler = () => ok([{ id: 'pay-1', reservationId: 'p1', status: 'PENDING', amountCents: 15000 }]);
 
       const res = await server().get('/me/overview').set('Authorization', authz());
 

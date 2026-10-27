@@ -98,6 +98,21 @@ describe('API HTTP de restaurants-service', () => {
       );
     });
 
+    it('GET /restaurants?ids= separa la lista por comas', async () => {
+      restaurants.findAll.mockResolvedValue({ data: [] });
+
+      await request(app.getHttpServer()).get('/restaurants?ids=64b7f0c2a1b2c3d4e5f60718, 64b7f0c2a1b2c3d4e5f60719&limit=2').expect(200);
+
+      expect(restaurants.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ ids: ['64b7f0c2a1b2c3d4e5f60718', '64b7f0c2a1b2c3d4e5f60719'], limit: 2 }),
+      );
+    });
+
+    it('GET /restaurants?ids= rechaza un id que no es un ObjectId', async () => {
+      await request(app.getHttpServer()).get('/restaurants?ids=64b7f0c2a1b2c3d4e5f60718,no-es-un-id').expect(400);
+      expect(restaurants.findAll).not.toHaveBeenCalled();
+    });
+
     it('GET /restaurants rechaza un limit mayor al máximo', async () => {
       await request(app.getHttpServer()).get('/restaurants?limit=999').expect(400);
       expect(restaurants.findAll).not.toHaveBeenCalled();

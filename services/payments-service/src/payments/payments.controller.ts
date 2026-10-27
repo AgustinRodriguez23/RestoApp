@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpStatus, Param, ParseUUIDPipe, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpStatus, Param, ParseUUIDPipe, Post, Query, Res, UseGuards } from '@nestjs/common';
 import {
   ApiAcceptedResponse,
   ApiBadGatewayResponse,
@@ -17,6 +17,7 @@ import { Response } from 'express';
 import { CurrentUser } from '../security/current-user.decorator';
 import { JwtAuthGuard } from '../security/jwt-auth.guard';
 import { JwtPayload } from '../security/jwt-payload';
+import { ListPaymentsQueryDto, MAX_RESERVATION_IDS } from './dto/list-payments-query.dto';
 import { PayDto } from './dto/pay.dto';
 import { PaymentDto } from './dto/payment.dto';
 import { IdempotencyKeyHeader } from './idempotency-key.decorator';
@@ -29,6 +30,17 @@ import { PaymentsService } from './payments.service';
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly payments: PaymentsService) {}
+
+  @Get()
+  @ApiOperation({
+    summary: 'Pagos de varias reservas a la vez',
+    description: `Hasta ${MAX_RESERVATION_IDS} ids. Devuelve solo los pagos de reservas tuyas que tengan pago: el resto no aparece (no da error).`,
+  })
+  @ApiOkResponse({ type: PaymentDto, isArray: true })
+  @ApiBadRequestResponse({ description: `Falta reservationIds, alguno no es un UUID o son más de ${MAX_RESERVATION_IDS}` })
+  byReservations(@CurrentUser() user: JwtPayload, @Query() query: ListPaymentsQueryDto) {
+    return this.payments.findByReservations(query.reservationIds, user);
+  }
 
   @Get('by-reservation/:reservationId')
   @ApiOperation({ summary: 'Pago de una reserva', description: 'El pago se crea solo al reservar con seña. Solo lo ve quien reservó.' })

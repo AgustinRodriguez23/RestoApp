@@ -19,7 +19,7 @@ const paymentDto = (status = 'SUCCEEDED') => ({ id: PAYMENT_ID, status });
 describe('HTTP (controllers + guards + validación + filtro de errores)', () => {
   let app: INestApplication;
   let jwt: JwtService;
-  let payments: Record<'pay' | 'findOne' | 'findByReservation', jest.Mock>;
+  let payments: Record<'pay' | 'findOne' | 'findByReservation' | 'findByReservations', jest.Mock>;
   let webhooks: { handle: jest.Mock };
 
   const auth = () => `Bearer ${jwt.sign({ sub: 'user-1', email: 'u@example.com', role: Role.CUSTOMER })}`;
@@ -30,7 +30,7 @@ describe('HTTP (controllers + guards + validación + filtro de errores)', () => 
   };
 
   beforeAll(async () => {
-    payments = { pay: jest.fn(), findOne: jest.fn(), findByReservation: jest.fn() };
+    payments = { pay: jest.fn(), findOne: jest.fn(), findByReservation: jest.fn(), findByReservations: jest.fn() };
     webhooks = { handle: jest.fn() };
 
     const moduleRef = await Test.createTestingModule({
@@ -153,6 +153,33 @@ describe('HTTP (controllers + guards + validación + filtro de errores)', () => 
       const res = await request(app.getHttpServer()).get(`/payments/by-reservation/${PAYMENT_ID}`).set('Authorization', auth());
 
       expect(res.status).toBe(404);
+    });
+
+    describe('GET /payments?reservationIds= (varias reservas en un pedido)', () => {
+      const ids = (n: number) => Array.from({ length: n }, (_, i) => `3f2b1c5e-8a41-4c0e-9d3a-${String(i).padStart(12, '0')}`);
+      const list = (query: string) => request(app.getHttpServer()).get(`/payments${query}`).set('Authorization', auth());
+
+      it('separa la lista por comas y la pasa con el usuario del token', async () => {
+        payments.findByReservations.mockResolvedValue([paymentDto()]);
+
+        const res = await list(`?reservationIds=${ids(2).join(', ')}`);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toHaveLength(1);
+        expect(payments.findByReservations).toHaveBeenCalledWith(ids(2), expect.objectContaining({ sub: 'user-1' }));
+      });
+
+      it.each([
+        ['sin reservationIds', ''],
+        ['vacío', '?reservationIds='],
+        ['con un id que no es UUID', `?reservationIds=${ids(1)[0]},no-es-un-id`],
+        ['con más de 50', `?reservationIds=${ids(51).join(',')}`],
+      ])('400 %s, sin llegar al servicio', async (_, query) => {
+        const res = await list(query);
+
+        expect(res.status).toBe(400);
+        expect(payments.findByReservations).not.toHaveBeenCalled();
+      });
     });
   });
 

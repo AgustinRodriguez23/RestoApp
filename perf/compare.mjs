@@ -15,14 +15,26 @@ const load = (path) => JSON.parse(readFileSync(path, 'utf8')).metrics;
 const before = load(beforePath);
 const after = load(afterPath);
 
-const ENDPOINTS = [
-  ['list', 'Listado (cacheado)'],
-  ['overview', 'Pantalla de restaurante (cacheado)'],
-  ['search', 'Búsqueda por texto (NO cacheado, control)'],
-  [null, 'Todos juntos'],
-];
+// Nombre legible de los endpoints conocidos; uno nuevo sale con su etiqueta tal cual
+const LABELS = {
+  list: 'Listado (cacheado)',
+  overview: 'Pantalla de restaurante (cacheado)',
+  search: 'Búsqueda por texto (NO cacheado, control)',
+  mine: 'Mis reservas (limit=50)',
+  'me-overview': 'Inicio del usuario (/me/overview)',
+};
 const durationKey = (endpoint) =>
   endpoint ? `http_req_duration{phase:measure,endpoint:${endpoint}}` : 'http_req_duration{phase:measure}';
+
+// Los endpoints salen de los umbrales del script (cada uno exporta su métrica), en el orden en que aparecen
+const endpointsIn = (metrics) =>
+  Object.keys(metrics)
+    .map((key) => /^http_req_duration\{phase:measure,endpoint:([^}]+)\}$/.exec(key)?.[1])
+    .filter(Boolean);
+const ENDPOINTS = [
+  ...[...new Set([...endpointsIn(before), ...endpointsIn(after)])].map((e) => [e, LABELS[e] ?? e]),
+  [null, 'Todos juntos'],
+];
 
 const ms = (value) => (value === undefined ? '—' : `${value.toFixed(1)} ms`);
 const change = (b, a) => {

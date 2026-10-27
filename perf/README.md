@@ -92,8 +92,9 @@ node perf/cleanup.mjs --yes          # borra lo del seed
 node perf/cleanup.mjs --e2e --yes    # borra lo que dejó el e2e (e2e/saga.e2e.mjs) al correrlo en local
 ```
 
-- **Sin `--e2e`**: los restaurantes del seed, sus cartas y los usuarios `perf-owner-*`. Necesita `mongo-restaurants`,
-  `postgres-auth`, `postgres-reservations` y `redis`.
+- **Sin `--e2e`**: lo de los dos seeds: los restaurantes `Perf …`, sus cartas, los usuarios `perf-owner-*` y `perf-diner`, y las
+  reservas, pagos y notificaciones de este último. Necesita `mongo-restaurants`, `postgres-auth`, `postgres-reservations`,
+  `postgres-payments`, `mongo-notifications` y `redis`.
 - **Con `--e2e`**: los usuarios `e2e-*@example.com` y todo lo suyo en cada servicio: sus restaurantes `E2E Resto …` con la carta,
   sus reservas, sus pagos (y claves de idempotencia) y sus notificaciones. Necesita además `postgres-payments` y `mongo-notifications`.
   Cada corrida del e2e crea su propio dueño, restaurante y clientes, así que en local se van acumulando.
@@ -106,6 +107,28 @@ Con `npm run infra:up` alcanza (los servicios no hacen falta). Al final invalida
   `E2E Resto …` en `Calle Falsa 123, Quilmes`, y además con dueño e2e). Un usuario de prueba que tenga algún otro restaurante no se borra.
 - **No borra nada si un cliente real tiene una reserva vigente** (por pagar o confirmada a futuro) en esos restaurantes, porque
   quedaría sin restaurante. Las pasadas o canceladas quedan como historial: la app las muestra igual, sin el nombre.
+
+## «Mis reservas»: el N+1 del BFF
+
+Mide `GET /reservations/mine?limit=50` (lo que pide el front) y `/me/overview` de un cliente con muchas reservas pagadas.
+Resultados y explicación en el README principal, «El N+1 de Mis reservas».
+
+```bash
+node perf/seed-reservations.mjs     # perf-diner con 30 reservas pagadas en 3 restaurantes (~30 s)
+
+# RATE explícito: el compose le pasa 100 a k6 por defecto, y cada "Mis reservas" son varias llamadas internas
+RATE=5  docker compose --profile perf run --rm k6 run my-reservations.k6.js --summary-export=results/mine-5rps.json
+RATE=20 docker compose --profile perf run --rm k6 run my-reservations.k6.js --summary-export=results/mine-20rps.json
+
+node perf/compare.mjs perf/results/<antes>.json perf/results/<después>.json
+```
+
+Para contar las llamadas internas de **un** pedido, mandá un `x-correlation-id` propio y buscalo en los logs de cada servicio:
+
+```bash
+curl -s localhost:3000/reservations/mine?limit=50 -H "Authorization: Bearer $TOKEN" -H "x-correlation-id: medir-1" > /dev/null
+docker logs payments-service 2>&1 | grep -c medir-1     # antes: 30, después: 1
+```
 
 ## Cómo leer los resultados (para no engañarse)
 

@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { PaymentEvents, ReservationCreatedData } from '../events/payment-events';
 import { GatewayUnavailableError, PAYMENT_GATEWAY, PaymentGateway } from '../gateway/payment-gateway';
 import { OutboxService } from '../messaging/outbox.service';
@@ -39,6 +39,15 @@ export class PaymentsService {
   async findByReservation(reservationId: string, user: JwtPayload): Promise<PaymentDto> {
     const payment = await this.repo.findOneBy({ reservationId });
     return toPaymentDto(this.ownedOrNotFound(payment, user));
+  }
+
+  /**
+   * Los pagos de varias reservas en una sola consulta (para "Mis reservas", que antes pedía uno por reserva).
+   * Solo los del usuario: una reserva ajena o sin pago no aparece, igual que el 404 de findByReservation.
+   */
+  async findByReservations(reservationIds: string[], user: JwtPayload): Promise<PaymentDto[]> {
+    const payments = await this.repo.findBy({ reservationId: In(reservationIds), customerId: user.sub });
+    return payments.map(toPaymentDto);
   }
 
   // ---------------------------------------------------------------- cobro (API)
