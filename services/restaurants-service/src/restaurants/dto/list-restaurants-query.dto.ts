@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { ArrayMaxSize, ArrayNotEmpty, IsInt, IsMongoId, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 export class ListRestaurantsQueryDto {
   @ApiPropertyOptional({ default: 1, minimum: 1 })
@@ -29,4 +29,15 @@ export class ListRestaurantsQueryDto {
   @IsString()
   @MaxLength(50)
   cuisine?: string;
+
+  @ApiPropertyOptional({
+    description: 'Solo estos restaurantes (ids separados por coma, hasta 50). Lo usa el BFF para nombrar los de una lista de reservas en un pedido.',
+    example: '64b7f0c2a1b2c3d4e5f60718,64b7f0c2a1b2c3d4e5f60719',
+  })
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.split(',').map((id) => id.trim()) : value))
+  @ArrayNotEmpty()
+  @ArrayMaxSize(50)
+  @IsMongoId({ each: true })
+  ids?: string[];
 }

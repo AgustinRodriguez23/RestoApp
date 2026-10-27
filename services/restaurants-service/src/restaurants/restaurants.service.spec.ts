@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
+import { Types } from 'mongoose';
 import { CacheService } from '../cache/cache.service';
 import { MenuItem } from '../menu/schemas/menu-item.schema';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
@@ -132,6 +133,19 @@ describe('RestaurantsService', () => {
       expect(model.find).toHaveBeenCalledWith({
         cuisine: { $regex: '^Parrilla$', $options: 'i' },
       });
+    });
+
+    it('con ids trae solo esos restaurantes, en una consulta y sin caché', async () => {
+      model.find.mockReturnValue(findChain([]));
+      model.countDocuments.mockResolvedValue(0);
+      const ids = ['64b7f0c2a1b2c3d4e5f60718', '64b7f0c2a1b2c3d4e5f60719'];
+
+      await service.findAll({ ids, limit: 2 });
+
+      const [filter] = model.find.mock.calls[0] as [{ _id: { $in: Types.ObjectId[] } }];
+      expect(filter._id.$in.map(String)).toEqual(ids);
+      expect(model.find).toHaveBeenCalledTimes(1);
+      expect(cache.wrap).not.toHaveBeenCalled();
     });
   });
 

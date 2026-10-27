@@ -273,7 +273,7 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 - **Un solo cliente HTTP (`UpstreamClient`)** con timeout en toda llamada, reenvío del token y del `x-correlation-id`, y reintento **solo de GET** (repetir un POST podría duplicar una reserva).
 - **Traducción de errores**: un 4xx del servicio (409 sin mesas, 404, 400...) llega igual al usuario; un 5xx es **502**, un timeout **504** y un servicio inaccesible **503**. Los mensajes no revelan direcciones internas.
 - **Validación en dos capas**: el BFF valida el formato y el token primero (si algo es inválido ni siquiera molesta a los servicios); los permisos por rol y por recurso los sigue decidiendo cada servicio.
-- **Enriquecimiento sin repetir llamadas**: para poner el nombre del restaurante en cada reserva se consulta una vez por restaurante distinto, máximo 10 en simultáneo.
+- **Enriquecimiento por lote**: el nombre del restaurante y el estado del pago de una lista de reservas salen de **un** pedido a cada servicio (`GET /restaurants?ids=…` y `GET /payments?reservationIds=…`, hasta 50 ids), no de uno por reserva. Antes, una página de 50 reservas con seña eran 50 llamadas a payments-service; ver «El N+1 de Mis reservas».
 - **`x-correlation-id`**: se genera (o se respeta el del cliente si es válido), se devuelve en la respuesta y se reenvía a los servicios. La Fase 5 lo usa para los logs.
 - **CORS solo en el BFF**: es el único servicio que llama el navegador (`CORS_ORIGIN`).
 - **Límite de intentos en login y registro** (`@nestjs/throttler`, en `src/auth/auth-throttling.ts`). Va en el BFF porque es la entrada y el único que ve la IP del cliente; auth-service ve todo como si viniera del BFF. Ventanas de 15 minutos:
@@ -381,7 +381,6 @@ Estados del pago: `PENDING → PROCESSING → SUCCEEDED → REFUNDED`, o `FAILED
 - El código de mensajería está **copiado** en reservations y payments (y los tests también): es candidato a paquete compartido, igual que seguridad y observabilidad.
 - El orden de los eventos no está garantizado (por los reintentos): los consumidores están escritos para tolerarlo.
 - `notifications-service` (avisar al cliente por mail/push al confirmarse) queda para después: los eventos ya están publicados.
-- Sin Docker en mi entorno de desarrollo, no pude probar `docker compose up` ni las imágenes; sí probé todo con RabbitMQ 3.12 y PostgreSQL 16 reales y los servicios corriendo como procesos.
 
 ## Fase 7: frontend (`apps/web`)
 
@@ -623,6 +622,30 @@ Cómo leerlo:
 
 Al correr Lighthouse sobre la pantalla de un restaurante con carta, la consola del navegador mostró un error: el front esperaba la carta como una lista plana de platos, pero `restaurants-service` la devuelve **agrupada por categoría** (`[{ category, items: [...] }]`). Los tests del front simulaban la forma equivocada y por eso no lo detectaron. Se corrigió el front, se agregó un test con una carta real y una sección en el e2e que verifica la forma de la respuesta del BFF. La lección: los tests que simulan al otro lado solo prueban lo que uno *cree* que devuelve; hace falta al menos una prueba contra el servicio real.
 
+### El N+1 de «Mis reservas» (BFF)
+
+"Mis reservas" pide hasta 50 reservas y el BFF le agrega a cada una el nombre de su restaurante y el estado de su pago. Lo hacía con **un pedido por reserva** a payments-service (en tandas de 10) y uno por restaurante distinto: el clásico problema N+1, pero entre servicios, donde cada llamada es un viaje HTTP con verificación del JWT.
+
+**Cómo se midió.** `perf/seed-reservations.mjs` carga un cliente con 30 reservas pagadas en 3 restaurantes (el peor caso realista de la pantalla) y `perf/my-reservations.k6.js` lo carga con el mismo modelo abierto que la prueba de lectura: 80 % "Mis reservas" (`limit=50`, como el front) y 20 % `/me/overview`. Las llamadas internas se contaron siguiendo un `x-correlation-id` en los logs de cada servicio.
+
+**Qué se cambió.** payments-service suma `GET /payments?reservationIds=…` (una consulta `IN` sobre un índice único, y solo los pagos del usuario del token: lo ajeno no aparece, igual que el 404 de antes) y restaurants-service acepta `?ids=…` en el listado (sin caché, como la búsqueda: las combinaciones de ids no se reusan). El BFF hace un pedido a cada uno.
+
+| | Antes | Después |
+|---|---:|---:|
+| Llamadas internas por cada "Mis reservas" (1 + restaurantes + pagos) | **34** (1 + 3 + 30) | **3** (1 + 1 + 1) |
+| Llamadas internas por `/me/overview` | 5 | 3 |
+
+A **5 pedidos por segundo** (una carga que el sistema de antes aguantaba):
+
+| Pedido | p50 antes | p50 después | p95 antes | p95 después | Cambio p95 |
+|---|---:|---:|---:|---:|---:|
+| Mis reservas (limit=50) | 158 ms | 27 ms | 286 ms | 52 ms | **−82 %** |
+| Inicio del usuario (`/me/overview`) | 30 ms | 29 ms | 51 ms | 39 ms | −23 % |
+
+A **20 pedidos por segundo** el de antes **colapsaba**: atendía 6 por segundo, k6 tuvo que descartar 371 pedidos y el p95 de "Mis reservas" llegó a 44 s (eran 680 llamadas internas por segundo). Después atiende los 20 con un p95 de 38 ms y ningún descarte. Subiendo la carga, el techo pasó de **~6 a ~60 pedidos por segundo** (a 80 se satura atendiendo 64).
+
+**Salvedades**: una corrida por caso en la misma máquina, con k6 compartiendo CPU con los servicios (el ruido entre corridas idénticas acá es de ±20 % en el p95, muy por debajo de estas diferencias); y un solo cliente, así que la base de payments siempre tiene caliente lo mismo.
+
 ### Limitaciones conocidas
 
 - **Las mediciones del backend son de una sola máquina y una sola corrida por caso** (ver las salvedades arriba); los números absolutos no se pueden extrapolar a otro entorno. Los de Lighthouse son de un entorno simulado.
@@ -816,6 +839,14 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Panel del dueño** (solo reservas del local)
 - [x] **Notificaciones**: bandeja dentro de la app para el cliente (`notifications-service`)
 - [x] **ESLint** en todo el monorepo, con reglas de promesas y hooks, y un job en el CI
+- [x] **Endurecimiento**: secretos fuertes en producción, límite de intentos de login, tope de reservas sin pagar, headers de seguridad (CSP), healthchecks robustos
+- [x] **N+1 del BFF**: "Mis reservas" de 34 llamadas internas a 3, medido con k6 (ver «El N+1 de Mis reservas»)
+- [ ] **Deploy**, en este orden:
+  1. Migraciones de TypeORM en lugar de `synchronize` (hoy las tablas se crean solas al arrancar: en producción un cambio de entidad podría borrar una columna con datos).
+  2. `docker-compose.prod.yml`: solo `web` publicado, TLS automático con Caddy, HSTS, sin contraseñas por defecto, Grafana con login, y las imágenes de `release.yml` en vez de construir.
+  3. Una ruta pública para los webhooks de la pasarela (`/api/webhooks/gateway` a través de nginx).
+  4. Node 22 (Node 20 ya no tiene soporte) e imágenes con `npm ci`: hoy cada una se construye desde la carpeta de su servicio, donde no está el `package-lock.json` (vive en la raíz del monorepo), así que `npm install` puede traer versiones distintas de las probadas.
+- [ ] **QR de pago con Mercado Pago**: un `MercadoPagoGateway` detrás de la interfaz `PaymentGateway`. Necesita el deploy, porque Mercado Pago avisa el resultado por webhook a una URL pública.
 
 ## Estructura
 

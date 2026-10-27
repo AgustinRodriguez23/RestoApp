@@ -39,17 +39,19 @@ export class RestaurantsService {
    * Lo que sí se repite (la portada, cada página, cada filtro de cocina) es lo que más se pide.
    */
   async findAll(query: ListRestaurantsQueryDto) {
-    const { page = 1, limit = 10, search, cuisine } = query;
-    if (search) return this.queryList(query);
+    const { page = 1, limit = 10, search, cuisine, ids } = query;
+    // Sin caché: las combinaciones de texto o de ids son casi infinitas (cada una sería una clave que no se reusa)
+    if (search || ids) return this.queryList(query);
 
     const key = CacheService.key('list', CacheService.hash({ page, limit, cuisine: cuisine?.toLowerCase() }));
     return this.cache.wrap(key, () => this.queryList(query));
   }
 
   private async queryList(query: ListRestaurantsQueryDto) {
-    const { page = 1, limit = 10, search, cuisine } = query;
+    const { page = 1, limit = 10, search, cuisine, ids } = query;
 
     const filter: FilterQuery<RestaurantDocument> = {};
+    if (ids) filter._id = { $in: ids.map((id) => new Types.ObjectId(id)) };
     if (search) filter.name = { $regex: escapeRegExp(search), $options: 'i' };
     if (cuisine) filter.cuisine = { $regex: `^${escapeRegExp(cuisine)}$`, $options: 'i' };
 

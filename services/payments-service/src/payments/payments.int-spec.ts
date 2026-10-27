@@ -204,6 +204,20 @@ describe('payments-service (integración con PostgreSQL, RabbitMQ y pasarela sim
       expect((await getPayment(p.id, 'c2')).status).toBe(404);
       expect((await request(app.getHttpServer()).get(`/payments/by-reservation/${p.reservationId}`).set('Authorization', bearer('c2'))).status).toBe(404);
     });
+
+    it('GET /payments?reservationIds= trae en un pedido los pagos propios, y nada de lo ajeno ni de lo que no existe', async () => {
+      const [a, b] = [await seed(), await seed({ status: PaymentStatus.SUCCEEDED })];
+      const foreign = await seed({ customerId: 'c2' });
+
+      const res = await request(app.getHttpServer())
+        .get('/payments')
+        .query({ reservationIds: [a.reservationId, b.reservationId, foreign.reservationId, randomUUID()].join(',') })
+        .set('Authorization', bearer('c1'));
+
+      expect(res.status).toBe(200);
+      expect(res.body.map((p: { reservationId: string }) => p.reservationId).sort()).toEqual([a.reservationId, b.reservationId].sort());
+      expect(res.body.find((p: { id: string }) => p.id === b.id)).toMatchObject({ status: 'SUCCEEDED', amountCents: 15000 });
+    });
   });
 
   describe('POST /payments/:id/pay', () => {
