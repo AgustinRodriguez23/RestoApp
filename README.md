@@ -78,6 +78,11 @@ npm run obs:up              # Loki + Alloy + Grafana (ver «Trazabilidad de logs
 | **web-bff** | http://localhost:3000 | http://localhost:3000/docs | http://localhost:3000/health |
 | **web (frontend)** | http://localhost:5173 | — | — |
 
+**Orden de arranque y healthchecks.** Cada contenedor arranca recién cuando lo que necesita está *healthy*: las bases y RabbitMQ antes que los servicios, y los cinco servicios (su `/health` responde 503 si su base no responde) antes que el BFF, así el front no recibe 503 en los primeros segundos. Todos tienen `start_period` (gracia de arranque: un chequeo fallido no cuenta) y `start_interval` (mientras tanto chequean seguido, así quedan healthy apenas están listos). Dos cosas que aparecieron al probarlo en una máquina cargada:
+
+- El chequeo de Mongo (`mongosh`) y el de RabbitMQ son programas pesados: ~1 s en reposo y **más de 10 s** con todo arrancando a la vez, aunque la base ya esté lista. Con `timeout: 5s` el chequeo fallaba solo y `docker compose up` abortaba con «dependency failed to start». Se reprodujo limitando la CPU de Mongo: antes quedaba *unhealthy* a los 137 s; con `timeout: 20s` queda *healthy* a los 24 s.
+- Docker le da a cada contenedor 10 s para apagarse y después lo mata. Con todo apagándose a la vez, Postgres no siempre llegaba a cerrar prolijo («shutdown was interrupted») y al volver pasaba **~2 minutos** recuperándose. Por eso las bases tienen `stop_grace_period: 1m` (cierran en ~3 s; es solo un tope) y Postgres `start_period: 3m`.
+
 ### Probar el flujo completo
 
 1. En el Swagger de **auth**, registrá un usuario con `"role": "RESTAURANT_OWNER"` y copiá el `accessToken` (hace falta `ALLOW_OWNER_SELF_REGISTER=true`, que ya viene en `.env.example`; sin esa variable el servicio responde 403).

@@ -1,8 +1,27 @@
+# Healthchecks: start_period es el tiempo de gracia del arranque (ahí un chequeo fallido no cuenta para
+# "unhealthy"), y start_interval chequea seguido mientras tanto, así el contenedor queda healthy apenas está listo.
+# Si un depends_on con service_healthy ve "unhealthy", compose aborta el up ("dependency failed to start").
+# Un start_period largo no demora nada si todo anda: solo tarda más en declarar caída una base que de verdad no arranca.
+#
+# Bases y RabbitMQ con stop_grace_period: 1m. Por defecto Docker espera 10 s y después mata el proceso: con todo
+# apagándose a la vez, Postgres no llegaba a cerrar prolijo y al volver hacía recuperación (fsync de todo el
+# directorio de datos): ~2 minutos rechazando conexiones. Por eso también su start_period es de 3 minutos.
+
+# Servicios Node: su /health responde 503 si su base no responde. $$PORT es la variable PORT de cada contenedor.
+x-app-healthcheck: &app-healthcheck
+  test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$$PORT/health || exit 1"]
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 60s
+  start_interval: 2s
+
 services:
   postgres-auth:
     image: postgres:16-alpine
     container_name: postgres-auth
     restart: unless-stopped
+    stop_grace_period: 1m
     environment:
       POSTGRES_USER: ${AUTH_DB_USER:-auth}
       POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-auth_password}
@@ -17,6 +36,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 3m
+      start_interval: 1s
 
   auth-service:
     build:
@@ -25,6 +46,7 @@ services:
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     depends_on:
       postgres-auth:
         condition: service_healthy
@@ -49,6 +71,7 @@ services:
     image: mongo:7
     container_name: mongo-restaurants
     restart: unless-stopped
+    stop_grace_period: 1m
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${RESTAURANTS_MONGO_USER:-restaurants}
       MONGO_INITDB_ROOT_PASSWORD: ${RESTAURANTS_MONGO_PASSWORD:-restaurants_password}
@@ -60,8 +83,12 @@ services:
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
-      timeout: 5s
+      # mongosh es una app de Node: el ping tarda ~1 s en reposo y más de 10 s con la máquina cargada
+      # (arrancando todo a la vez), aunque Mongo ya esté listo. Con 5 s el chequeo fallaba solo.
+      timeout: 20s
       retries: 10
+      start_period: 2m
+      start_interval: 3s
 
   restaurants-service:
     build:
@@ -70,6 +97,7 @@ services:
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     depends_on:
       mongo-restaurants:
         condition: service_healthy
@@ -105,11 +133,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 15s
+      start_interval: 1s
 
   postgres-reservations:
     image: postgres:16-alpine
     container_name: postgres-reservations
     restart: unless-stopped
+    stop_grace_period: 1m
     environment:
       POSTGRES_USER: ${RESERVATIONS_DB_USER:-reservations}
       POSTGRES_PASSWORD: ${RESERVATIONS_DB_PASSWORD:-reservations_password}
@@ -124,6 +155,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 3m
+      start_interval: 1s
 
   reservations-service:
     build:
@@ -132,6 +165,7 @@ services:
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     depends_on:
       postgres-reservations:
         condition: service_healthy
@@ -169,6 +203,7 @@ services:
     image: rabbitmq:3.13-management-alpine
     container_name: rabbitmq
     restart: unless-stopped
+    stop_grace_period: 1m
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-reservas}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-reservas_password}
@@ -180,13 +215,17 @@ services:
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
-      timeout: 10s
+      # Igual que mongosh: la CLI de Erlang es pesada (~1,2 s en reposo) y bajo carga se pasa de 10 s
+      timeout: 20s
       retries: 10
+      start_period: 2m
+      start_interval: 3s
 
   postgres-payments:
     image: postgres:16-alpine
     container_name: postgres-payments
     restart: unless-stopped
+    stop_grace_period: 1m
     environment:
       POSTGRES_USER: ${PAYMENTS_DB_USER:-payments}
       POSTGRES_PASSWORD: ${PAYMENTS_DB_PASSWORD:-payments_password}
@@ -201,6 +240,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 3m
+      start_interval: 1s
 
   payments-service:
     build:
@@ -209,6 +250,7 @@ services:
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     depends_on:
       postgres-payments:
         condition: service_healthy
@@ -239,6 +281,7 @@ services:
     image: mongo:7
     container_name: mongo-notifications
     restart: unless-stopped
+    stop_grace_period: 1m
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${NOTIFICATIONS_MONGO_USER:-notifications}
       MONGO_INITDB_ROOT_PASSWORD: ${NOTIFICATIONS_MONGO_PASSWORD:-notifications_password}
@@ -250,8 +293,12 @@ services:
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
-      timeout: 5s
+      # mongosh es una app de Node: el ping tarda ~1 s en reposo y más de 10 s con la máquina cargada
+      # (arrancando todo a la vez), aunque Mongo ya esté listo. Con 5 s el chequeo fallaba solo.
+      timeout: 20s
       retries: 10
+      start_period: 2m
+      start_interval: 3s
 
   notifications-service:
     build:
@@ -260,6 +307,7 @@ services:
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
+    healthcheck: *app-healthcheck
     depends_on:
       mongo-notifications:
         condition: service_healthy
@@ -282,12 +330,18 @@ services:
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
+    # Espera a que los servicios respondan su /health: si no, los primeros pedidos del front darían 503
     depends_on:
-      - auth-service
-      - restaurants-service
-      - reservations-service
-      - payments-service
-      - notifications-service
+      auth-service:
+        condition: service_healthy
+      restaurants-service:
+        condition: service_healthy
+      reservations-service:
+        condition: service_healthy
+      payments-service:
+        condition: service_healthy
+      notifications-service:
+        condition: service_healthy
     environment:
       PORT: 3000
       LOG_LEVEL: ${LOG_LEVEL:-info}
