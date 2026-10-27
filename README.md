@@ -236,7 +236,7 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| POST | `/auth/register`, `/auth/login` | Reenvían a auth-service |
+| POST | `/auth/register`, `/auth/login` | Reenvían a auth-service, con **límite de intentos** (429, ver abajo) |
 | GET | `/auth/me` | Perfil del usuario |
 | GET | `/restaurants` | Listado con búsqueda y filtros |
 | GET | `/restaurants/:id/overview` | **Agregada**: restaurante + carta + (con `?date=&partySize=`) horarios libres |
@@ -266,9 +266,20 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 - **Enriquecimiento sin repetir llamadas**: para poner el nombre del restaurante en cada reserva se consulta una vez por restaurante distinto, máximo 10 en simultáneo.
 - **`x-correlation-id`**: se genera (o se respeta el del cliente si es válido), se devuelve en la respuesta y se reenvía a los servicios. La Fase 5 lo usa para los logs.
 - **CORS solo en el BFF**: es el único servicio que llama el navegador (`CORS_ORIGIN`).
+- **Límite de intentos en login y registro** (`@nestjs/throttler`, en `src/auth/auth-throttling.ts`). Va en el BFF porque es la entrada y el único que ve la IP del cliente; auth-service ve todo como si viniera del BFF. Ventanas de 15 minutos:
+
+  | Ruta | Clave | Límite | Qué frena |
+  |---|---|---|---|
+  | `POST /auth/login` | IP + email | 10 | Adivinar la contraseña de una cuenta |
+  | `POST /auth/login` | IP | 50 | Probar muchas cuentas desde el mismo lugar |
+  | `POST /auth/register` | IP | 30 | Crear cuentas en masa |
+
+  Pasado el límite responde **429** con el formato de error de siempre (el front muestra el mensaje tal cual) y `Retry-After-<límite>` en segundos; el pedido ni llega a auth-service. La clave de cuenta es IP + email y no el email solo: si no, cualquiera podría bloquearle el login a otra persona escribiendo mal su contraseña desde otro lado.
+- **La IP real detrás de nginx (`TRUST_PROXY`)**: nginx agrega la IP del cliente al final de `X-Forwarded-For`, y con `TRUST_PROXY=1` (ya puesto en el compose) el BFF toma justo esa. Sin esto, todo el tráfico del navegador tendría la IP de nginx: un solo contador para todos, y un atacante bloquearía el login de todo el mundo. Probado: 11 intentos por nginx con un `X-Forwarded-For` inventado distinto en cada uno dan 429 igual.
 
 ### Limitaciones conocidas
 
+- Los contadores de intentos viven en la memoria del BFF: se reinician al reiniciarlo (`docker compose restart web-bff`, útil si corrés el e2e muchas veces seguidas) y con varias instancias cada una contaría por su lado; ahí habría que pasarlos a Redis. En el compose de desarrollo el puerto 3000 del BFF está publicado: pegándole directo (sin nginx) se puede inventar el `X-Forwarded-For` y saltear el límite por IP, y auth-service (3001) también se puede llamar directo. En un deploy solo se publica `web`.
 - Sin caché propio: `/reservations/mine` consulta restaurants-service en cada llamada (desde la Fase 8 ese servicio responde desde Redis; ver «Fase 8»).
 - Del dueño están las reservas del local, la gestión del restaurante (mesas y horarios) y su carta (ver «Panel del dueño»).
 - Los DTOs de entrada están duplicados respecto de cada servicio; si cambian allá hay que actualizarlos acá.

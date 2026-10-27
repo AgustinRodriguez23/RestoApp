@@ -299,6 +299,10 @@ services:
       NOTIFICATIONS_SERVICE_URL: http://notifications-service:3005
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-3000}
+      # El navegador entra por nginx (servicio web), que agrega X-Forwarded-For: así el BFF ve la IP real
+      # para los límites de login. Ojo: el puerto 3000 publicado acá permite saltear nginx e inventar ese header;
+      # en un deploy solo se publica web.
+      TRUST_PROXY: 1
     ports:
       - "${BFF_PORT:-3000}:3000"
 
