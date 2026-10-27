@@ -281,6 +281,7 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 
   Pasado el límite responde **429** con el formato de error de siempre (el front muestra el mensaje tal cual) y `Retry-After-<límite>` en segundos; el pedido ni llega a auth-service. La clave de cuenta es IP + email y no el email solo: si no, cualquiera podría bloquearle el login a otra persona escribiendo mal su contraseña desde otro lado.
 - **La IP real detrás de nginx (`TRUST_PROXY`)**: nginx agrega la IP del cliente al final de `X-Forwarded-For`, y con `TRUST_PROXY=1` (ya puesto en el compose) el BFF toma justo esa. Sin esto, todo el tráfico del navegador tendría la IP de nginx: un solo contador para todos, y un atacante bloquearía el login de todo el mundo. Probado: 11 intentos por nginx con un `X-Forwarded-For` inventado distinto en cada uno dan 429 igual.
+- **Headers de seguridad con `helmet`** (en `app.setup.ts`, así los tests usan la misma configuración): `nosniff`, no dejarse meter en iframes de otro sitio, CSP y sin `X-Powered-By: Express` (no le regala a nadie qué framework probar). La CSP es la de helmet, que deja andar el Swagger de `/docs`. Se sacan HSTS y `upgrade-insecure-requests` porque suponen HTTPS: el segundo, además, rompe el Swagger abierto por IP (`http://192.168…:3000/docs` pediría sus archivos por https). Los servicios internos no lo tienen: en un deploy no se publican.
 
 ### Limitaciones conocidas
 
@@ -423,6 +424,9 @@ Con `npm run up` el frontend también se levanta en http://localhost:5173 (conte
 - **Fechas y montos**: los horarios se muestran en la zona del restaurante (no la del navegador) y el dinero viaja en centavos.
 - **Accesibilidad básica**: etiquetas en todos los campos, foco visible, regiones `aria-live` para los resultados, respeta `prefers-reduced-motion`, botones de al menos 44 px.
 - **Diseño**: la reserva se muestra como una *comanda* (el ticket del mozo, con su borde perforado); es el único adorno de la app.
+- **Headers de seguridad en nginx** (`apps/web/security-headers.conf`). La CSP es estricta y sin `'unsafe-inline'`: la app solo carga lo propio (las fuentes vienen en el bundle con fontsource, el favicon es un `data:` y el navegador solo habla con `/api`). Si alguien lograra inyectar un script (XSS), no corre, y aunque corriera no podría mandar datos a otro dominio (`connect-src 'self'`). Además: no dejarse meter en un iframe (`frame-ancestors 'none'`, contra *clickjacking*), `nosniff`, `Referrer-Policy`, `Permissions-Policy` (sin cámara, micrófono ni ubicación), `Cross-Origin-Opener-Policy`, y nginx ya no dice su versión.
+  - **Una trampa de nginx**: un `add_header` dentro de un `location` *anula* todos los del `server`. Como `/` y `/assets/` tienen su propio `Cache-Control`, los headers puestos a nivel `server` no salían en ninguno; por eso van en un archivo que se incluye en cada `location`.
+  - **Cómo se probó**: recorriendo la app en Chromium a través de nginx sin un solo aviso en la consola (fuentes y datos cargan), e inyectando a mano un `<script>` inline y un `fetch` a otro dominio: la CSP bloqueó los dos.
 
 ### Responsive
 
@@ -439,9 +443,9 @@ Limitación: a 320 px (celulares muy chicos) el último link de la navegación q
 ### Limitaciones conocidas
 
 - **El panel del dueño cubre reservas, restaurante y carta** (ver «Panel del dueño»); incluye el resumen del día.
-- El **token se guarda en `localStorage`**: sobrevive al F5 pero un script malicioso (XSS) podría leerlo. Lo más seguro sería que el BFF lo entregue en una cookie `httpOnly`.
+- El **token se guarda en `localStorage`**: sobrevive al F5 pero un script malicioso (XSS) podría leerlo. La CSP lo hace mucho más difícil (un script inyectado no corre ni puede mandar el token afuera), pero lo más seguro sería que el BFF lo entregue en una cookie `httpOnly`.
+- **Sin HSTS** (`Strict-Transport-Security`): obliga a usar HTTPS y por HTTP el navegador lo ignora. Va con el TLS del deploy, en el proxy que lo termine, igual que `upgrade-insecure-requests`.
 - Los **tests** cubren la lógica y las pantallas con un servidor falso (`fetch` simulado); no hay todavía pruebas con un navegador real contra el stack (lo recorrí a mano con Playwright, pero ese script no está en el repo).
-- Sin Docker en mi entorno de desarrollo no pude probar la imagen `web` ni la configuración de nginx; sí probé el build de la imagen paso a paso (instalación aislada + `npm run build`) y el frontend contra los servicios reales con `npm run dev`.
 - Solo tema claro; sin traducciones (todo en español rioplatense).
 
 ## Panel del dueño (`/panel`)
