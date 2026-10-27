@@ -29,6 +29,15 @@ describe('DepositPolicy', () => {
     expect(() => policy({ PAYMENT_WINDOW_MINUTES: '0' })).toThrow(/PAYMENT_WINDOW_MINUTES/);
   });
 
+  it('por defecto un cliente puede tener 3 reservas esperando el pago; se configura con MAX_PENDING_RESERVATIONS', () => {
+    expect(policy().maxPendingPerCustomer).toBe(3);
+    expect(policy({ MAX_PENDING_RESERVATIONS: '5' }).maxPendingPerCustomer).toBe(5);
+  });
+
+  it.each(['0', '-1', 'abc'])('rechaza un tope de pendientes inválido (%s)', (value) => {
+    expect(() => policy({ MAX_PENDING_RESERVATIONS: value })).toThrow(/MAX_PENDING_RESERVATIONS/);
+  });
+
   describe('isRefundable', () => {
     const p = policy({ REFUND_CUTOFF_HOURS: '24' });
 

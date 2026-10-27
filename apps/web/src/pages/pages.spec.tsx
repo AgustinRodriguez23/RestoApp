@@ -163,6 +163,25 @@ describe('RestaurantPage', () => {
     await waitFor(() => expect(server.callsTo('GET', `/restaurants/${RID}/overview`).length).toBeGreaterThan(1));
   });
 
+  it('con el tope de pendientes (422) muestra el motivo y el camino a "Mis reservas", sin perder el horario elegido', async () => {
+    const message = 'Ya tenés 3 reservas esperando el pago de la seña. Pagá o cancelá alguna en "Mis reservas" para hacer otra.';
+    mockApi({
+      'GET /restaurants/64b7f0c2a1b2c3d4e5f60718/overview': { body: overview },
+      'POST /reservations': { status: 422, body: { message } },
+    });
+    signIn();
+    const user = userEvent.setup();
+    renderApp(`/restaurantes/${RID}`);
+
+    await user.click(await screen.findByRole('button', { name: /21:00/ }));
+    await user.click(screen.getByRole('button', { name: 'Reservar las 21:00 h' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('3 reservas esperando el pago');
+    expect(screen.getByRole('link', { name: 'Ir a mis reservas' })).toHaveAttribute('href', '/reservas');
+    // No es un 409: el horario no se ocupó, así que sigue elegido
+    expect(screen.getByRole('button', { name: 'Reservar las 21:00 h' })).toBeEnabled();
+  });
+
   it('muestra la carta TAL COMO la devuelve el servicio: agrupada por categoría', async () => {
     const dish = (name: string, priceCents: number, extra: Record<string, unknown> = {}) => ({
       id: name,

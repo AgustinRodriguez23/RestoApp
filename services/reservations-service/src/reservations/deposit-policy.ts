@@ -21,11 +21,15 @@ export class DepositPolicy {
   readonly paymentWindowMinutes: number;
   /** Si el cliente cancela con menos de estas horas de anticipación, pierde la seña. */
   readonly refundCutoffHours: number;
+  /** Cuántas reservas puede tener un cliente esperando el pago a la vez (cada una retiene una mesa sin pagar). */
+  readonly maxPendingPerCustomer: number;
 
   constructor(config: ConfigService) {
     this.perPersonCents = nonNegativeInt(config, 'DEPOSIT_PER_PERSON_CENTS', 0);
     this.paymentWindowMinutes = nonNegativeInt(config, 'PAYMENT_WINDOW_MINUTES', 15);
     if (this.paymentWindowMinutes === 0) throw new Error('PAYMENT_WINDOW_MINUTES tiene que ser mayor a 0');
+    this.maxPendingPerCustomer = nonNegativeInt(config, 'MAX_PENDING_RESERVATIONS', 3);
+    if (this.maxPendingPerCustomer === 0) throw new Error('MAX_PENDING_RESERVATIONS tiene que ser mayor a 0');
     this.refundCutoffHours = nonNegativeInt(config, 'REFUND_CUTOFF_HOURS', 24);
     this.currency = config.get<string>('DEPOSIT_CURRENCY') || 'ARS';
   }

@@ -3,6 +3,7 @@ import {
   ConflictException,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Test } from '@nestjs/testing';
@@ -90,6 +91,7 @@ describe('ReservationsService', () => {
     findOneBy: jest.Mock;
     update: jest.Mock;
     findAndCount: jest.Mock;
+    count: jest.Mock;
     createQueryBuilder: jest.Mock;
   };
   let summaryRows: unknown[];
@@ -98,7 +100,7 @@ describe('ReservationsService', () => {
   let outbox: { enqueue: jest.Mock };
   let deposit: DepositPolicy;
   let transaction: jest.Mock;
-  let txManager: { getRepository: () => unknown };
+  let txManager: { getRepository: () => unknown; query: jest.Mock };
 
   /** Política de seña de los tests: 5000 centavos por persona, 24 h de corte de reembolso, 15 min para pagar. */
   const makeDeposit = (perPersonCents: number) =>
@@ -124,6 +126,7 @@ describe('ReservationsService', () => {
       findOneBy: jest.fn(),
       update: jest.fn(),
       findAndCount: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
       createQueryBuilder: jest.fn(() => qb),
     };
     // Query builder de mentira: cada método devuelve el mismo objeto (encadenable) y getRawMany entrega las filas del test
@@ -135,7 +138,7 @@ describe('ReservationsService', () => {
     outbox = { enqueue: jest.fn().mockResolvedValue(undefined) };
     deposit = makeDeposit(0); // sin seña por defecto: es el comportamiento de antes de existir los pagos
     // Una "transacción" de mentira: ejecuta el callback con un manager que usa el mismo repo simulado
-    txManager = { getRepository: () => repo };
+    txManager = { getRepository: () => repo, query: jest.fn().mockResolvedValue([]) };
     transaction = jest.fn(async (fn: (m: unknown) => unknown) => fn(txManager));
 
     const moduleRef = await Test.createTestingModule({
@@ -394,6 +397,32 @@ describe('ReservationsService', () => {
 
       expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ status: CONFIRMED, depositCents: 0, expiresAt: null }));
       expect(outbox.enqueue.mock.calls[0][1]).toBe('reservation.confirmed');
+      expect(txManager.query).not.toHaveBeenCalled(); // sin seña no retiene mesas sin pagar: no hay tope que mirar
+    });
+
+    it('con 2 reservas esperando el pago, la tercera entra (tope por defecto: 3)', async () => {
+      repo.count.mockResolvedValue(2);
+
+      await expect(service.create(customer, dto())).resolves.toMatchObject({ status: PENDING_PAYMENT });
+    });
+
+    it('con 3 esperando el pago, la cuarta da 422 y no se guarda nada', async () => {
+      repo.count.mockResolvedValue(3);
+
+      await expect(service.create(customer, dto())).rejects.toBeInstanceOf(UnprocessableEntityException);
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(outbox.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('cuenta solo las pendientes vigentes de ESE cliente, después de tomar su lock', async () => {
+      await service.create(customer, dto());
+
+      expect(txManager.query).toHaveBeenCalledWith(expect.stringContaining('pg_advisory_xact_lock'), [1, 'cust-1']);
+      expect(txManager.query.mock.invocationCallOrder[0]).toBeLessThan(repo.count.mock.invocationCallOrder[0]);
+      const { where } = repo.count.mock.calls[0][0];
+      expect(where).toMatchObject({ customerId: 'cust-1', status: PENDING_PAYMENT });
+      expect((where.expiresAt as FindOperator<Date>).type).toBe('moreThan');
+      expect((where.expiresAt as FindOperator<Date>).value).toEqual(NOW);
     });
 
     it('reservation.confirmed lleva restaurante, día, personas y zona horaria para poder avisarle al cliente', async () => {

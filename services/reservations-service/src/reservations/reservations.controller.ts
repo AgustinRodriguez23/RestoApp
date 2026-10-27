@@ -23,6 +23,7 @@ import {
   ApiServiceUnavailableResponse,
   ApiTags,
   ApiUnauthorizedResponse,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
 import { CurrentUser } from '../security/current-user.decorator';
@@ -57,6 +58,7 @@ export class ReservationsController {
   @ApiCreatedResponse({ type: ReservationDto })
   @ApiBadRequestResponse({ description: 'Horario inválido, fuera de turno, pasado, o sin mesas para ese grupo' })
   @ApiConflictResponse({ description: 'No quedan mesas libres en ese horario' })
+  @ApiUnprocessableEntityResponse({ description: 'El cliente ya tiene MAX_PENDING_RESERVATIONS (3) reservas esperando el pago de la seña' })
   @ApiServiceUnavailableResponse({ description: 'restaurants-service no responde' })
   create(@CurrentUser() user: JwtPayload, @Body() dto: CreateReservationDto) {
     return this.reservations.create(user, dto);

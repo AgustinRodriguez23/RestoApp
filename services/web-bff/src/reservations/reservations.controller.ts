@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags, ApiUnauthorizedResponse } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags, ApiUnauthorizedResponse, ApiUnprocessableEntityResponse } from '@nestjs/swagger';
 import { Ctx } from '../security/call-context.decorator';
 import { JwtAuthGuard } from '../security/jwt-auth.guard';
 import { CallContext, UpstreamClient } from '../upstream/upstream-client';
@@ -30,6 +30,7 @@ export class ReservationsController {
 
   @Post()
   @ApiOperation({ summary: 'Crear una reserva (la mesa se asigna sola). 409 si ya no hay lugar.' })
+  @ApiUnprocessableEntityResponse({ description: 'Ya tiene 3 reservas esperando el pago de la seña (lo decide reservations-service)' })
   async create(@Body() dto: CreateReservationDto, @Ctx() ctx: CallContext) {
     const created = await this.upstream.call<Reservation>('reservations', { method: 'POST', path: '/reservations', body: dto }, ctx);
     return this.enrichOne(created, ctx);

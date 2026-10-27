@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -12,6 +13,7 @@ import {
   EntityManager,
   FindOptionsWhere,
   LessThan,
+  MoreThan,
   MoreThanOrEqual,
   QueryFailedError,
   Repository,
@@ -57,6 +59,9 @@ export function isExclusionViolation(error: unknown): boolean {
 
 const MS_PER_MINUTE = 60_000;
 const MS_PER_DAY = 86_400_000;
+
+/** Primera mitad de la clave del advisory lock (la segunda es el cliente): separa este lock de cualquier otro futuro. */
+const PENDING_LIMIT_LOCK = 1;
 
 @Injectable()
 export class ReservationsService {
@@ -109,6 +114,7 @@ export class ReservationsService {
         // La reserva y su evento se guardan en UNA transacción (outbox): o existen los dos o ninguno.
         // Cada mesa se prueba en su propia transacción porque una violación de la restricción aborta la anterior.
         const reservation = await this.dataSource.transaction(async (manager) => {
+          if (needsPayment) await this.assertCanHoldAnotherTable(manager, user.sub);
           const repo = manager.getRepository(Reservation);
           const saved = await repo.save(
             repo.create({
@@ -273,6 +279,29 @@ export class ReservationsService {
   // ---------------------------------------------------------------------------------------------
 
   /** Valida el inicio de la reserva y devuelve la hora local en el restaurante. */
+  /**
+   * Tope de reservas esperando la seña por cliente. Cada una retiene una mesa sin haber pagado nada: sin tope, una
+   * sola cuenta podría bloquear el salón entero durante el plazo de pago, y volver a hacerlo cuando vence.
+   * Las vencidas que el job todavía no pasó a EXPIRED no cuentan: ya no se pueden pagar.
+   *
+   * Contar y después insertar no alcanza si dos pedidos del mismo cliente llegan a la vez (los dos cuentan 2 y
+   * entran los dos). El advisory lock los pone en fila: se libera al terminar la transacción, cuando la reserva
+   * del primero ya es visible para el conteo del segundo.
+   */
+  private async assertCanHoldAnotherTable(manager: EntityManager, customerId: string): Promise<void> {
+    await manager.query('SELECT pg_advisory_xact_lock($1::int, hashtext($2))', [PENDING_LIMIT_LOCK, customerId]);
+    const pending = await manager.getRepository(Reservation).count({
+      where: { customerId, status: ReservationStatus.PENDING_PAYMENT, expiresAt: MoreThan(new Date()) },
+    });
+    const max = this.deposit.maxPendingPerCustomer;
+    if (pending >= max) {
+      throw new UnprocessableEntityException(
+        `Ya tenés ${max === 1 ? 'una reserva' : `${max} reservas`} esperando el pago de la seña. ` +
+          'Pagá o cancelá alguna en "Mis reservas" para hacer otra.',
+      );
+    }
+  }
+
   private validateStart(startsAt: Date) {
     if (Number.isNaN(startsAt.getTime())) {
       throw new BadRequestException('startsAt no es una fecha válida');

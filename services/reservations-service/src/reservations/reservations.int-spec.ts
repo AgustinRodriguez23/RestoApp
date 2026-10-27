@@ -67,6 +67,9 @@ describe('reservations-service (integración con PostgreSQL real)', () => {
       DB_SCHEMA: SCHEMA,
       RESTAURANT_TIME_ZONE: 'America/Argentina/Buenos_Aires',
       NODE_ENV: 'test',
+      // Estos tests son sin seña (las reservas nacen CONFIRMED). Hay que decirlo: si no, sale del .env de la raíz
+      // de quien los corre, que con el .env.example cobra seña. La seña se prueba en deposit.int-spec.ts.
+      DEPOSIT_PER_PERSON_CENTS: '0',
     });
 
     // TypeORM no crea el schema solo: se crea antes de levantar la app
