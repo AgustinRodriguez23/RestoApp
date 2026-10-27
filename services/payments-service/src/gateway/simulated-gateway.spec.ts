@@ -158,8 +158,13 @@ describe('createGateway (elección de la pasarela por configuración)', () => {
   });
 
   it('en producción la simulada arranca con ALLOW_SIMULATED_GATEWAY=true (demo)', () => {
-    const env = { NODE_ENV: 'production', ALLOW_SIMULATED_GATEWAY: 'true', GATEWAY_WEBHOOK_SECRET: 's' };
+    const env = { NODE_ENV: 'production', ALLOW_SIMULATED_GATEWAY: 'true', GATEWAY_WEBHOOK_SECRET: 'w'.repeat(32) };
     expect(createGateway(config(env)).name).toBe('simulated');
+  });
+
+  it('en producción no arranca con el secreto de webhook de ejemplo', () => {
+    const env = { NODE_ENV: 'production', ALLOW_SIMULATED_GATEWAY: 'true', GATEWAY_WEBHOOK_SECRET: 'cambiame-secreto-de-webhooks' };
+    expect(() => createGateway(config(env))).toThrow(/GATEWAY_WEBHOOK_SECRET.*valor de ejemplo/);
   });
 
   it('sin secreto de webhook no arranca (no se acepta un secreto por defecto)', () => {

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { requireSecret } from '../common/secrets';
 import { PAYMENT_GATEWAY, PaymentGateway } from './payment-gateway';
 import { SimulatedGateway } from './simulated-gateway';
 
@@ -24,7 +25,7 @@ export function createGateway(config: ConfigService): PaymentGateway {
       }
       const port = config.get<string>('PORT') ?? '3004';
       return new SimulatedGateway({
-        webhookSecret: config.getOrThrow<string>('GATEWAY_WEBHOOK_SECRET'),
+        webhookSecret: requireSecret(config, 'GATEWAY_WEBHOOK_SECRET'),
         webhookUrl: config.get<string>('SIMULATED_WEBHOOK_URL') || `http://localhost:${port}/webhooks/gateway`,
         webhookDelayMs: Number(config.get<string>('SIMULATED_WEBHOOK_DELAY_MS') ?? 3000),
       });
