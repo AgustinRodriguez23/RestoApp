@@ -146,6 +146,23 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       expect(reservations.calls).toHaveLength(0);
     });
 
+    it.each([
+      ['una respuesta normal', '/restaurants'],
+      ['un error', '/restaurants?limit=abc'],
+    ])('headers de seguridad en %s, y sin delatar que es Express', async (_, path) => {
+      restaurants.handler = () => ok({ data: [], total: 0, page: 1, limit: 10 });
+
+      const res = await server().get(path);
+
+      expect(res.headers['x-powered-by']).toBeUndefined();
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
+      expect(res.headers['content-security-policy']).toContain("object-src 'none'");
+      // Suponen HTTPS: los pone quien termine TLS (con upgrade-insecure-requests el Swagger abierto por IP se rompe)
+      expect(res.headers['content-security-policy']).not.toContain('upgrade-insecure-requests');
+      expect(res.headers['strict-transport-security']).toBeUndefined();
+    });
+
     it('las rutas públicas no piden token', async () => {
       restaurants.handler = () => ok({ data: [], total: 0 });
 
