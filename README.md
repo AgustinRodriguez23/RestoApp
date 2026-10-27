@@ -46,7 +46,8 @@ Requisitos: Node 20+ y Docker.
 
 ```bash
 # 1. Variables de entorno
-cp .env.example .env        # y cambiá JWT_SECRET y GATEWAY_WEBHOOK_SECRET por valores propios
+cp .env.example .env        # y cambiá JWT_SECRET y GATEWAY_WEBHOOK_SECRET: openssl rand -hex 32
+                            # (con los de ejemplo, los contenedores no arrancan)
 
 # 2. Instalar dependencias de todos los servicios (npm workspaces)
 npm install
@@ -152,7 +153,7 @@ npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda m
 ```
 
 - **Validación estricta de entrada**: se rechazan propiedades que no están en el DTO (evita *mass assignment*; por ejemplo, el cliente no puede elegir el `ownerId`).
-- **Los servicios no arrancan sin `JWT_SECRET`** (falla rápido en vez de correr inseguro).
+- **Los servicios no arrancan sin `JWT_SECRET`** (falla rápido en vez de correr inseguro). Con `NODE_ENV=production` (las imágenes de Docker) tampoco arrancan con un secreto débil: menos de 32 caracteres o el valor de ejemplo del `.env.example`, tanto en `JWT_SECRET` como en `GATEWAY_WEBHOOK_SECRET`. Con un `JWT_SECRET` adivinable cualquiera firma un token de dueño; con el de los webhooks, un pago aprobado.
 - **Código de seguridad duplicado entre servicios** (guards, roles, filtro de errores): es el costo de la independencia. Cuando haya más servicios conviene moverlo a un paquete compartido del monorepo.
 
 ## auth-service
@@ -165,7 +166,8 @@ npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda m
 | GET | `/health` | Estado del servicio y de su base de datos |
 
 - Contraseñas con bcrypt; el hash nunca sale en la API (`select: false` en la entidad).
-- Mismo error para email inexistente y contraseña incorrecta, para no revelar qué emails están registrados.
+- Mismo error **y mismo tiempo** para email inexistente y contraseña incorrecta, para no revelar qué emails están registrados: si el email no existe se compara igual contra un hash de relleno del mismo costo, así el bcrypt (lo más caro del pedido) se paga siempre.
+- Email repetido: 409. Si dos registros con el mismo email llegan a la vez y los dos pasan el chequeo previo, el índice único de la base deja entrar a uno y el otro recibe el mismo 409 (no un 500).
 - `synchronize` de TypeORM solo fuera de producción; en producción corresponde usar migraciones (pendiente).
 
 ## restaurants-service

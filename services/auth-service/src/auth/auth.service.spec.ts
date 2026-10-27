@@ -3,10 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import * as bcrypt from 'bcryptjs';
+import { QueryFailedError } from 'typeorm';
 import { Role } from '../users/role.enum';
 import { User } from '../users/user.entity';
 import { UsersService } from '../users/users.service';
 import { AuthService } from './auth.service';
+
+// bcrypt real, pero con compare registrado (con `import * as` no se puede espiar después)
+jest.mock('bcryptjs', () => {
+  const actual = jest.requireActual<typeof import('bcryptjs')>('bcryptjs');
+  return { ...actual, compare: jest.fn((data: string, hash: string): Promise<boolean> => actual.compare(data, hash)) };
+});
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -79,6 +86,27 @@ describe('AuthService', () => {
       expect(users.create).not.toHaveBeenCalled();
     });
 
+    const dbError = (code: string) =>
+      new QueryFailedError('INSERT', [], Object.assign(new Error('db'), { code }));
+
+    it('lanza 409 si otro registro con el mismo email ganó la carrera (índice único)', async () => {
+      users.findByEmail.mockResolvedValue(null);
+      users.create.mockRejectedValue(dbError('23505'));
+
+      await expect(
+        service.register({ email: 'ana@example.com', name: 'Ana', password: 'Password123' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('otro error de la base no se disfraza de 409', async () => {
+      users.findByEmail.mockResolvedValue(null);
+      users.create.mockRejectedValue(dbError('08006'));
+
+      await expect(
+        service.register({ email: 'ana@example.com', name: 'Ana', password: 'Password123' }),
+      ).rejects.toBeInstanceOf(QueryFailedError);
+    });
+
     const ownerDto = { email: 'dueno@example.com', name: 'Dueño', password: 'Password123', role: Role.RESTAURANT_OWNER };
 
     it('rechaza con 403 el alta de un dueño si ALLOW_OWNER_SELF_REGISTER no está activado', async () => {
@@ -137,6 +165,17 @@ describe('AuthService', () => {
       await expect(
         service.login({ email: 'nadie@example.com', password: 'Password123' }),
       ).rejects.toThrow('Credenciales inválidas');
+    });
+
+    it('si el usuario no existe igual compara un hash, para tardar lo mismo', async () => {
+      users.findByEmailWithPassword.mockResolvedValue(null);
+      (bcrypt.compare as jest.Mock).mockClear();
+
+      await expect(service.login({ email: 'nadie@example.com', password: 'Password123' })).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      // Un hash de costo 10, igual que los de los usuarios reales
+      expect(bcrypt.compare).toHaveBeenCalledWith('Password123', expect.stringMatching(/^\$2[aby]\$10\$/));
     });
   });
 
