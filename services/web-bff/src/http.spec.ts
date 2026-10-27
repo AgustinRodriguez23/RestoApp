@@ -651,12 +651,13 @@ describe('web-bff (HTTP + servicios falsos)', () => {
 
     it('lista mis restaurantes reenviando el token', async () => {
       restaurants.handler = () => ok([{ id: RID, name: 'La Parrilla' }]);
+      const bearer = asOwner(); // uno solo: firmar otro más tarde puede cambiar el iat (segundos) y no coincidir
 
-      const res = await server().get('/owner/restaurants').set('Authorization', asOwner()).expect(200);
+      const res = await server().get('/owner/restaurants').set('Authorization', bearer).expect(200);
 
       expect(res.body).toEqual([{ id: RID, name: 'La Parrilla' }]);
       expect(restaurants.calls[0]).toMatchObject({ method: 'GET', path: '/restaurants/mine' });
-      expect(restaurants.calls[0].headers.authorization).toBe(asOwner());
+      expect(restaurants.calls[0].headers.authorization).toBe(bearer);
     });
 
     it('un cliente recibe el 403 de restaurants-service', async () => {
@@ -746,12 +747,13 @@ describe('web-bff (HTTP + servicios falsos)', () => {
 
     it('crea un restaurante reenviando el cuerpo y el token', async () => {
       restaurants.handler = () => ({ status: 201, body: { id: RID, ...valid } });
+      const bearer = asOwner();
 
-      const res = await server().post('/owner/restaurants').set('Authorization', asOwner()).send(valid).expect(201);
+      const res = await server().post('/owner/restaurants').set('Authorization', bearer).send(valid).expect(201);
 
       expect(res.body.id).toBe(RID);
       expect(restaurants.calls[0]).toMatchObject({ method: 'POST', path: '/restaurants', body: valid });
-      expect(restaurants.calls[0].headers.authorization).toBe(asOwner());
+      expect(restaurants.calls[0].headers.authorization).toBe(bearer);
     });
 
     it('rechaza sin llamar al servicio: sin mesas, hora inválida o campos de más', async () => {
@@ -822,11 +824,12 @@ describe('web-bff (HTTP + servicios falsos)', () => {
 
     it('agrega un plato reenviando el cuerpo y el token', async () => {
       restaurants.handler = () => ({ status: 201, body: { id: ITEM, ...dish } });
+      const bearer = asOwner();
 
-      await server().post(`/owner/restaurants/${RID}/menu-items`).set('Authorization', asOwner()).send(dish).expect(201);
+      await server().post(`/owner/restaurants/${RID}/menu-items`).set('Authorization', bearer).send(dish).expect(201);
 
       expect(restaurants.calls[0]).toMatchObject({ method: 'POST', path: `/restaurants/${RID}/menu-items`, body: dish });
-      expect(restaurants.calls[0].headers.authorization).toBe(asOwner());
+      expect(restaurants.calls[0].headers.authorization).toBe(bearer);
     });
 
     it('rechaza sin llamar al servicio: alérgeno inventado, precio decimal o repetidos', async () => {
