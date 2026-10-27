@@ -1,7 +1,8 @@
 /**
  * Borra datos de prueba de las bases locales.
  *
- *   node perf/cleanup.mjs                lo que creó perf/seed.mjs: restaurantes "Perf", sus cartas y los usuarios perf-owner-*
+ *   node perf/cleanup.mjs                lo que crearon perf/seed.mjs y perf/seed-reservations.mjs: restaurantes "Perf", sus
+ *                                        cartas, los usuarios perf-owner-* y perf-diner, y las reservas, pagos y avisos de este
  *   node perf/cleanup.mjs --e2e          lo que creó e2e/saga.e2e.mjs: los usuarios e2e-* y todo lo suyo (restaurantes,
  *                                        reservas, pagos y notificaciones)
  *   Sin --yes solo muestra qué borraría. Con --yes borra.
@@ -24,7 +25,7 @@ const TARGETS = {
   perf: {
     label: 'del seed',
     restaurants: { name: { $regex: '^Perf ' }, address: { $regex: '^Calle \\d+ 1234, Quilmes$' } },
-    users: "email LIKE 'perf-owner-%@example.com'",
+    users: "(email LIKE 'perf-owner-%@example.com' OR email = 'perf-diner@example.com')",
   },
   e2e: {
     label: 'del e2e',
@@ -118,10 +119,10 @@ console.log(`Usuarios ${target.label}: ${userIds?.length ?? '? (postgres-auth no
 
 // Una reserva vigente (retiene la mesa y es a futuro) de alguien que NO es de prueba quedaría sin restaurante:
 // ni el cliente podría ir ni el dueño gestionarla. Las pasadas o liberadas quedan como historial (el BFF las muestra sin nombre).
-// En modo e2e las reservas de los propios usuarios de prueba se borran, así que no cuentan.
+// Las reservas de los propios usuarios de prueba (los clientes del e2e, perf-diner) se borran, así que no cuentan.
 let reservationIds = [];
-if (restaurantIds.length > 0 || E2E) {
-  const notTest = E2E ? ` AND customer_id NOT IN (${sqlList(userIds)})` : '';
+if (restaurantIds.length > 0 || userIds?.length) {
+  const notTest = userIds?.length ? ` AND customer_id NOT IN (${sqlList(userIds)})` : '';
   const counts = psqlIfUp(
     'postgres-reservations',
     `SELECT count(*) FILTER (WHERE status IN ('PENDING_PAYMENT', 'CONFIRMED') AND starts_at > now()) || ' ' || count(*)
@@ -132,15 +133,15 @@ if (restaurantIds.length > 0 || E2E) {
   if (active > 0) fail(`Hay ${active} reserva(s) vigente(s) de clientes reales en esos restaurantes. No borro nada: quedarían sin restaurante.`);
   if (kept > 0) console.log(`Reservas pasadas o canceladas de clientes reales: ${kept} (quedan como historial, sin nombre de restaurante)`);
 
-  if (E2E) {
+  if (userIds?.length) {
     reservationIds = psqlColumn('postgres-reservations', `SELECT id FROM reservations WHERE customer_id IN (${sqlList(userIds)})`);
   }
 }
 
-// En modo e2e también se borra lo que dejaron las reservas en payments y notifications
+// También se borra lo que dejaron las reservas de los usuarios de prueba en payments y notifications
 let paymentsWhere = '';
 let notificationsCount = 0;
-if (E2E) {
+if (userIds?.length) {
   paymentsWhere = `reservation_id IN (${sqlList(reservationIds)}) OR customer_id IN (${sqlList(userIds)})`;
   try {
     const counts = psql(
@@ -173,9 +174,9 @@ if (!CONFIRM) {
 
 // --- 2. Borrar ----------------------------------------------------------------------------------------
 // No hay claves foráneas entre bases (cada servicio tiene la suya), así que el orden no rompe nada.
-// Se borra de "afuera hacia adentro" para que, si algo corta a la mitad, lo que quede siga siendo encontrable con --e2e.
+// Se borra de "afuera hacia adentro" para que, si algo corta a la mitad, lo que quede siga siendo encontrable al repetir.
 
-if (E2E) {
+if (userIds?.length) {
   const notifications = mongo(
     'mongo-notifications',
     NOTIFICATIONS_DB,
