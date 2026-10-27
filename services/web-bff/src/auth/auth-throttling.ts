@@ -9,7 +9,7 @@ export const WINDOW_MS = 15 * 60_000;
 export const THROTTLE_IP = 'ip';
 export const THROTTLE_ACCOUNT = 'account';
 
-/** Altas permitidas por IP cada 15 minutos (una corrida del e2e hace 9). */
+/** Altas permitidas por IP cada 15 minutos (una corrida del e2e hace 11). */
 export const REGISTER_LIMIT = 30;
 
 /**

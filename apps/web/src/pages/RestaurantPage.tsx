@@ -190,6 +190,12 @@ export function RestaurantPage() {
         )}
 
         {create.error && <ErrorNotice error={create.error} title="No pudimos reservar" />}
+        {/* 422: llegó al tope de reservas esperando la seña. La salida es pagar o cancelar alguna. */}
+        {(create.error as { status?: number } | null)?.status === 422 && (
+          <Link to="/reservas" className="justify-self-start font-semibold text-sifon-dark underline">
+            Ir a mis reservas
+          </Link>
+        )}
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={reserve} busy={create.isPending} disabled={isAuthenticated && !draft.startsAt}>
             {!isAuthenticated ? 'Ingresá para reservar' : selected ? `Reservar las ${formatTime(selected.startsAt, zone)} h` : 'Elegí un horario'}

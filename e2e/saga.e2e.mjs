@@ -381,7 +381,13 @@ async function main() {
   if (!process.env.E2E_RESTAURANT_ID) {
     section('11. Resumen del día: conteo por estado');
     const day = freshDay();
-    const [a, b, c] = [(await reserve(slot(day, '12:00'))).body, (await reserve(slot(day, '14:00'))).body, (await reserve(slot(day, '16:00'))).body];
+    // Cliente propio: el principal ya tiene reservas esperando la seña y estas tres pasarían el tope (sección 13)
+    const diner = await register('CUSTOMER', 'summary');
+    const [a, b, c] = [
+      (await reserve(slot(day, '12:00'), {}, diner)).body,
+      (await reserve(slot(day, '14:00'), {}, diner)).body,
+      (await reserve(slot(day, '16:00'), {}, diner)).body,
+    ];
     check('se crean tres reservas ese día', !!a.id && !!b.id && !!c.id);
     check('el dueño cancela una', (await http('POST', `${BFF}/reservations/${c.id}/cancel`, { token: owner })).status === 200);
 
@@ -470,6 +476,28 @@ async function main() {
     const readAll = await http('POST', `${BFF}/notifications/read-all`, { token: buyer });
     check('marcar todas devuelve cuántas cambió (3)', readAll.status === 200 && readAll.body.updated === 3, JSON.stringify(readAll.body));
     check('el contador queda en 0', (await http('GET', `${BFF}/notifications/unread-count`, { token: buyer })).body.count === 0);
+  }
+
+  // ------------------------------------------------------------------ 13
+  // Cada reserva esperando la seña retiene una mesa sin pagar: sin tope, una cuenta bloquearía el salón (MAX_PENDING_RESERVATIONS=3)
+  section('13. Tope de reservas esperando la seña: 3 por cliente');
+  {
+    const day = freshDay();
+    const hoarder = await register('CUSTOMER', 'tope');
+    const held = [];
+    for (const time of ['12:00', '14:00', '16:00']) held.push(await reserve(slot(day, time), {}, hoarder));
+    check('las tres primeras entran y esperan el pago', held.every((r) => r.status === 201 && r.body.status === 'PENDING_PAYMENT'), held.map((r) => r.status).join(','));
+
+    const fourth = await reserve(slot(day, '18:00'), {}, hoarder);
+    // 422 y no 409: el front lee el 409 como "te ganaron el horario" y lo deselecciona
+    check('la cuarta da 422 (no 409) y dice qué hacer', fourth.status === 422 && /Mis reservas/.test(fourth.body.message), `${fourth.status} ${JSON.stringify(fourth.body)}`);
+    const others = await reserve(slot(day, '18:00'));
+    check('otro cliente puede reservar ese horario', others.status === 201, String(others.status));
+    // Se cancela enseguida: si no, el cliente principal llegaría al tope antes de la sección 7
+    await http('POST', `${BFF}/reservations/${others.body.id}/cancel`, { token: customer });
+
+    await http('POST', `${BFF}/reservations/${held[0].body.id}/cancel`, { token: hoarder });
+    check('cancelar una libera el cupo', (await reserve(slot(day, '20:00'), {}, hoarder)).status === 201);
   }
 
   // ------------------------------------------------------------------ 7

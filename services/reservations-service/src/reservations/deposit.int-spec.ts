@@ -218,6 +218,51 @@ describe('reservations-service: seña y saga (integración con PostgreSQL y Rabb
     });
   });
 
+  describe('tope de reservas esperando la seña (3 por cliente)', () => {
+    // Turnos de 90 min que no se pisan: con una sola mesa, lo único que decide si entran es el tope
+    const slots = ['10:00', '11:30', '13:00', '14:30', '16:00', '17:30'].map(at);
+
+    it('la cuarta pendiente da 422 con un mensaje que dice qué hacer; otro cliente no se ve afectado', async () => {
+      for (const startsAt of slots.slice(0, 3)) expect((await book('c1', startsAt)).status).toBe(201);
+
+      const fourth = await book('c1', slots[3]);
+      expect(fourth.status).toBe(422);
+      expect(fourth.body.message).toMatch(/esperando el pago.*Mis reservas/);
+      expect((await book('c2', slots[3])).status).toBe(201);
+    });
+
+    it('cancelar una, o pagarla, libera el cupo', async () => {
+      const ids: string[] = [];
+      for (const startsAt of slots.slice(0, 3)) ids.push((await book('c1', startsAt)).body.id);
+
+      await cancel(ids[0], 'c1');
+      expect((await book('c1', slots[3])).status).toBe(201);
+
+      sendPayment('payment.succeeded', ids[1]);
+      await waitFor(async () => (await status(ids[1])) === 'CONFIRMED');
+      expect((await book('c1', slots[4])).status).toBe(201);
+    });
+
+    it('una pendiente vencida que el job todavía no pasó a EXPIRED no ocupa cupo (ya no se puede pagar)', async () => {
+      const ids: string[] = [];
+      for (const startsAt of slots.slice(0, 3)) ids.push((await book('c1', startsAt)).body.id);
+      await ds.query(`UPDATE "${SCHEMA}"."reservations" SET expires_at = now() - interval '1 minute' WHERE id = $1`, [ids[0]]);
+
+      expect((await book('c1', slots[3])).status).toBe(201);
+    });
+
+    it('6 pedidos simultáneos del mismo cliente: entran exactamente 3 (el lock evita contar dos veces lo mismo)', async () => {
+      const results = await Promise.all(slots.map((startsAt) => book('c1', startsAt)));
+
+      const codes = results.map((r) => r.status).sort();
+      expect(codes).toEqual([201, 201, 201, 422, 422, 422]);
+      const [{ count }] = await ds.query(
+        `SELECT count(*)::int AS count FROM "${SCHEMA}"."reservations" WHERE customer_id = 'c1' AND status = 'PENDING_PAYMENT'`,
+      );
+      expect(count).toBe(3);
+    });
+  });
+
   describe('resultado del pago', () => {
     it('payment.succeeded confirma la reserva y emite reservation.confirmed', async () => {
       const { body } = await book('c1');
