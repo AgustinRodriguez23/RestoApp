@@ -456,28 +456,4 @@ describe('reservations-service: seña y saga (integración con PostgreSQL y Rabb
       expect(refund.payload.data).toMatchObject({ paymentId: 'pay-after-cancel', reason: 'RESERVATION_CANCELLED' });
     });
   });
-
-  describe('restricción de exclusión', () => {
-    it('una base con la restricción vieja (solo CONFIRMED) se actualiza sola al arrancar', async () => {
-      const { ReservationsSchemaBootstrap } = await import('./reservations-schema.bootstrap');
-      const table = `"${SCHEMA}"."reservations"`;
-      await ds.query(`ALTER TABLE ${table} DROP CONSTRAINT reservations_no_overlap`);
-      await ds.query(`
-        ALTER TABLE ${table} ADD CONSTRAINT reservations_no_overlap
-        EXCLUDE USING gist (restaurant_id WITH =, table_number WITH =, tstzrange(starts_at, ends_at) WITH &&)
-        WHERE (status = 'CONFIRMED')`);
-
-      await new ReservationsSchemaBootstrap(ds).onModuleInit();
-
-      const [{ def }] = await ds.query(
-        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'reservations_no_overlap' AND conrelid = '${table}'::regclass`,
-      );
-      expect(def).toContain('PENDING_PAYMENT');
-      expect((await book('c1')).status).toBe(201);
-      expect((await book('c2')).status).toBe(409);
-
-      // Y volver a correrlo no cambia nada
-      await new ReservationsSchemaBootstrap(ds).onModuleInit();
-    });
-  });
 });

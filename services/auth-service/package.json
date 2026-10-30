@@ -8,9 +8,13 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
+    "migration:generate": "nest build && typeorm migration:generate -p -d dist/data-source.js",
+    "migration:run": "nest build && typeorm migration:run -d dist/data-source.js",
+    "migration:revert": "nest build && typeorm migration:revert -d dist/data-source.js",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "test:integration": "jest --config jest-integration.json --runInBand --forceExit"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.7",
