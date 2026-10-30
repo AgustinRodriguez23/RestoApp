@@ -11,7 +11,6 @@ import { PaymentEventsConsumer } from './payment-events.consumer';
 import { ReservationExpirationService } from './reservation-expiration.service';
 import { Reservation } from './entities/reservation.entity';
 import { ReservationsController } from './reservations.controller';
-import { ReservationsSchemaBootstrap } from './reservations-schema.bootstrap';
 import { ReservationsService } from './reservations.service';
 
 @Module({
@@ -22,7 +21,6 @@ import { ReservationsService } from './reservations.service';
     AvailabilityService,
     BookingPolicy,
     DepositPolicy,
-    ReservationsSchemaBootstrap,
     PaymentEventsConsumer,
     ReservationExpirationService,
   ],

@@ -71,6 +71,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # auth solo tiene el test de migraciones (no usa RabbitMQ, pero el job lo levanta igual)
+          - service: auth-service
+            db_port: 5433
+            db_user: auth
+            db_password: auth_password
+            db_name: auth_db
           - service: reservations-service
             db_port: 5434
             db_user: reservations

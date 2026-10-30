@@ -79,7 +79,7 @@ export class ReservationsService {
   /**
    * Crea una reserva y le asigna la mesa más chica en la que entre el grupo.
    * No hay "chequear y después insertar": se intenta insertar directamente y es PostgreSQL
-   * quien rechaza el solapamiento (ver ReservationsSchemaBootstrap). Si la mesa elegida
+   * quien rechaza el solapamiento (ver la restricción en reservation.entity.ts). Si la mesa elegida
    * ya está tomada se prueba con la siguiente que sirva.
    */
   async create(user: JwtPayload, dto: CreateReservationDto): Promise<Reservation> {

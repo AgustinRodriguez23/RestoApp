@@ -59,8 +59,6 @@ services:
       DB_USER: ${AUTH_DB_USER:-auth}
       DB_PASSWORD: ${AUTH_DB_PASSWORD:-auth_password}
       DB_NAME: ${AUTH_DB_NAME:-auth_db}
-      # Sin migraciones todavía: las imágenes (NODE_ENV=production) crean/actualizan las tablas al arrancar
-      DB_SYNCHRONIZE: "true"
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
       ALLOW_OWNER_SELF_REGISTER: ${ALLOW_OWNER_SELF_REGISTER:-false}
@@ -181,8 +179,6 @@ services:
       DB_USER: ${RESERVATIONS_DB_USER:-reservations}
       DB_PASSWORD: ${RESERVATIONS_DB_PASSWORD:-reservations_password}
       DB_NAME: ${RESERVATIONS_DB_NAME:-reservations_db}
-      # Sin migraciones todavía: las imágenes (NODE_ENV=production) crean/actualizan las tablas al arrancar
-      DB_SYNCHRONIZE: "true"
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       # Dentro de la red de Docker los servicios se encuentran por nombre
       RESTAURANTS_SERVICE_URL: http://restaurants-service:3002
@@ -264,8 +260,6 @@ services:
       DB_USER: ${PAYMENTS_DB_USER:-payments}
       DB_PASSWORD: ${PAYMENTS_DB_PASSWORD:-payments_password}
       DB_NAME: ${PAYMENTS_DB_NAME:-payments_db}
-      # Sin migraciones todavía: las imágenes (NODE_ENV=production) crean/actualizan las tablas al arrancar
-      DB_SYNCHRONIZE: "true"
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:-reservas_password}@rabbitmq:5672
       # Pasarela: 'simulated' (la de desarrollo). Más adelante, la real elegida por esta variable.

@@ -161,6 +161,39 @@ npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda m
 - **Los servicios no arrancan sin `JWT_SECRET`** (falla rápido en vez de correr inseguro). Con `NODE_ENV=production` (las imágenes de Docker) tampoco arrancan con un secreto débil: menos de 32 caracteres o el valor de ejemplo del `.env.example`, tanto en `JWT_SECRET` como en `GATEWAY_WEBHOOK_SECRET`. Con un `JWT_SECRET` adivinable cualquiera firma un token de dueño; con el de los webhooks, un pago aprobado.
 - **Código de seguridad duplicado entre servicios** (guards, roles, filtro de errores): es el costo de la independencia. Cuando haya más servicios conviene moverlo a un paquete compartido del monorepo.
 
+## Migraciones de la base (TypeORM)
+
+`auth-service`, `reservations-service` y `payments-service` definen su esquema con **migraciones** (`src/migrations`), que se aplican al arrancar, antes de atender pedidos (`migrationsRun`). `synchronize` está apagado siempre, también en desarrollo. (restaurants y notifications usan MongoDB, sin esquema.)
+
+Por qué no `synchronize`, que antes creaba las tablas solo:
+
+- **Adivina el cambio** comparando las entidades con la base. Para agrandar un `varchar(300)` a `varchar(301)` genera `DROP COLUMN` + `ADD COLUMN`: borra los datos de esa columna. Lo vi en el test de migraciones, que muestra el SQL que haría falta.
+- **Borraba la restricción anti reservas dobles en cada arranque.** TypeORM elimina las restricciones de exclusión que no figuran en la entidad, y la nuestra la creaba aparte un bootstrap al iniciar. Entre una cosa y la otra la base no protegía las mesas, y con dos instancias, una podía borrarla mientras la otra atendía. Ahora está declarada en la entidad (`@Exclusion`) y la crea la migración.
+
+### Cambiar una entidad
+
+```bash
+npm run infra:up
+npm run migration:generate -w reservations-service -- src/migrations/AgregarAlgo   # compara con tu base local
+# revisar el SQL generado (sacarle "public." a los enums, como en la inicial) y sumarla a src/migrations/index.ts
+npm run migration:run -w reservations-service      # o arrancar el servicio, que la aplica solo
+npm run migration:revert -w reservations-service   # deshace la última
+```
+
+Los scripts usan `src/data-source.ts`, que arma la misma conexión que la app a partir de las variables de entorno o del `.env` de la raíz.
+
+### Decisiones que vale la pena mirar
+
+- **Bases de antes de las migraciones**: la migración inicial ve que las tablas ya existen (las creó `synchronize`), queda registrada y no toca nada. Lo probé con un test y arrancando los servicios contra las bases de Docker que ya tenían datos. No hace falta borrar nada.
+- **Un test que falla si te olvidás de generar la migración** (`src/migrations/migrations.int-spec.ts`, en los tres servicios y en el CI). Aplica las migraciones en un schema vacío y le pide a TypeORM el SQL que faltaría para llegar a las entidades: tiene que salir vacío. También revierte todo y vuelve a aplicar, y prueba una base creada con `synchronize`. Comprobé que falla si cambio una columna sin generar la migración.
+- **Los demás tests de integración también usan las migraciones**, así que prueban el mismo esquema que corre en producción. Para que caigan en el schema temporal de cada test, la conexión fija el `search_path` en ese schema. Por eso las migraciones no nombran el schema, y las extensiones (`uuid-ossp`, `btree_gist`) las crea la migración en `public` y no el driver.
+- **El `down` no borra las extensiones**: son de toda la base y otro schema puede estar usándolas.
+
+### Limitaciones conocidas
+
+- **TypeORM no toma un lock al migrar.** Si dos instancias de un servicio arrancan a la vez con una migración pendiente, una falla y Docker la reinicia, y en el segundo intento la migración ya está aplicada. Con una instancia por servicio, como en el compose, no pasa. Con varias réplicas conviene correr `migration:run` como paso aparte antes del deploy.
+- Las migraciones corren en una transacción: un `CREATE INDEX` sobre una tabla grande la bloquearía mientras dura. Con estos volúmenes no importa. Si importara, esa migración tendría que usar `CONCURRENTLY` fuera de la transacción.
+
 ## auth-service
 
 | Método | Ruta | Descripción |
@@ -173,7 +206,6 @@ npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda m
 - Contraseñas con bcrypt; el hash nunca sale en la API (`select: false` en la entidad).
 - Mismo error **y mismo tiempo** para email inexistente y contraseña incorrecta, para no revelar qué emails están registrados: si el email no existe se compara igual contra un hash de relleno del mismo costo, así el bcrypt (lo más caro del pedido) se paga siempre.
 - Email repetido: 409. Si dos registros con el mismo email llegan a la vez y los dos pasan el chequeo previo, el índice único de la base deja entrar a uno y el otro recibe el mismo 409 (no un 500).
-- `synchronize` de TypeORM solo fuera de producción; en producción corresponde usar migraciones (pendiente).
 
 ## restaurants-service
 
@@ -235,7 +267,6 @@ npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda m
 
 - `/availability` es una **foto del momento**: entre que se consulta y se reserva, otra persona puede tomar la mesa, así que reservar puede dar 409 aunque figurara libre. Es lo esperable, y la base lo garantiza.
 - Si el dueño modifica las mesas o los horarios en restaurants-service, las reservas ya hechas **no se revalidan**. Y si una mesa desaparece, sus reservas quedan apuntando a un número que ya no existe.
-- La restricción se crea al arrancar (`reservations-schema.bootstrap.ts`) y `synchronize` crea las tablas: para producción corresponde usar migraciones.
 - El usuario de la base necesita permiso para `CREATE EXTENSION btree_gist` (en el contenedor ya lo tiene).
 - Con `DEPOSIT_PER_PERSON_CENTS=0` no hay seña y las reservas nacen `CONFIRMED`, como antes de la Fase 6. En ese modo **no hay tope**: una reserva confirmada sin pagar retiene la mesa hasta su horario, y limitar cuántas reservas futuras tiene alguien es otra regla (falta).
 - El tope es por cuenta: alguien con varias cuentas lo multiplica. Lo frena en parte el límite de altas por IP del BFF.
@@ -370,7 +401,6 @@ Estados del pago: `PENDING → PROCESSING → SUCCEEDED → REFUNDED`, o `FAILED
 - **Compensaciones**: pago rechazado → la reserva se cancela y la mesa vuelve a estar libre. Pago aprobado que llega cuando la reserva ya venció o se canceló → `reservation.refund_requested` → reembolso. Cancelación → reservations decide `refundable` (política de 24 h) y payments solo ejecuta.
 - **Mensajes desordenados**: si llega un evento sobre un pago que todavía no existe, se reintenta con demora (no es "veneno"): da tiempo a que llegue `reservation.created`.
 - **Vencimiento**: un `UPDATE … RETURNING` cada `EXPIRATION_CHECK_MS`; con varias instancias, cada reserva vence una sola vez.
-- **Esquema de la base**: todavía no hay migraciones; los servicios usan `synchronize` de TypeORM. Como las imágenes corren con `NODE_ENV=production` (donde está apagado), `docker-compose.yml` pone `DB_SYNCHRONIZE=true`. En producción de verdad se reemplaza por migraciones.
 - **Reservas con pago en proceso (`PROCESSING`)** no se tocan al cancelarse o vencer: manda el resultado del webhook (y si se aprobó, se devuelve).
 
 ### Limitaciones conocidas
@@ -531,7 +561,6 @@ Esas reglas las impone reservations-service (`cancel` falla si ya comenzó; `sta
 - El resumen **cuenta reservas, no comensales**: no suma las personas de cada reserva, ni muestra ocupación por franja horaria ni el monto de las señas. Sería sumar columnas a la misma consulta agregada.
 - Las reservas de varios locales no se juntan en una sola vista.
 - El panel no se actualiza solo: refresca al volver a la pestaña o al tocar una acción.
-- `DB_SYNCHRONIZE` crea la columna nueva automáticamente; en producción haría falta una migración.
 
 ## Fase 8: performance (Redis, k6, Lighthouse)
 
@@ -841,11 +870,11 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **ESLint** en todo el monorepo, con reglas de promesas y hooks, y un job en el CI
 - [x] **Endurecimiento**: secretos fuertes en producción, límite de intentos de login, tope de reservas sin pagar, headers de seguridad (CSP), healthchecks robustos
 - [x] **N+1 del BFF**: "Mis reservas" de 34 llamadas internas a 3, medido con k6 (ver «El N+1 de Mis reservas»)
-- [ ] **Deploy**, en este orden:
-  1. Migraciones de TypeORM en lugar de `synchronize` (hoy las tablas se crean solas al arrancar: en producción un cambio de entidad podría borrar una columna con datos).
-  2. `docker-compose.prod.yml`: solo `web` publicado, TLS automático con Caddy, HSTS, sin contraseñas por defecto, Grafana con login, y las imágenes de `release.yml` en vez de construir.
-  3. Una ruta pública para los webhooks de la pasarela (`/api/webhooks/gateway` a través de nginx).
-  4. Node 22 (Node 20 ya no tiene soporte) e imágenes con `npm ci`: hoy cada una se construye desde la carpeta de su servicio, donde no está el `package-lock.json` (vive en la raíz del monorepo), así que `npm install` puede traer versiones distintas de las probadas.
+- [x] **Migraciones de TypeORM** en lugar de `synchronize` (ver «Migraciones de la base»)
+- [ ] **Deploy** en un VPS de Hetzner, en este orden:
+  1. `docker-compose.prod.yml`: solo `web` publicado, TLS automático con Caddy, HSTS, sin contraseñas por defecto, Grafana con login, y las imágenes de `release.yml` en vez de construir.
+  2. Una ruta pública para los webhooks de la pasarela (`/api/webhooks/gateway` a través de nginx).
+  3. Node 22 (Node 20 ya no tiene soporte) e imágenes con `npm ci`: hoy cada una se construye desde la carpeta de su servicio, donde no está el `package-lock.json` (vive en la raíz del monorepo), así que `npm install` puede traer versiones distintas de las probadas.
 - [ ] **QR de pago con Mercado Pago**: un `MercadoPagoGateway` detrás de la interfaz `PaymentGateway`. Necesita el deploy, porque Mercado Pago avisa el resultado por webhook a una URL pública.
 
 ## Estructura
