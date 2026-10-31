@@ -32,13 +32,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: auth-service, context: services/auth-service }
-          - { name: restaurants-service, context: services/restaurants-service }
-          - { name: reservations-service, context: services/reservations-service }
-          - { name: payments-service, context: services/payments-service }
-          - { name: web-bff, context: services/web-bff }
-          - { name: web, context: apps/web }
-          - { name: notifications-service, context: services/notifications-service }
+          - { name: auth-service, dockerfile: services/auth-service/Dockerfile }
+          - { name: restaurants-service, dockerfile: services/restaurants-service/Dockerfile }
+          - { name: reservations-service, dockerfile: services/reservations-service/Dockerfile }
+          - { name: payments-service, dockerfile: services/payments-service/Dockerfile }
+          - { name: web-bff, dockerfile: services/web-bff/Dockerfile }
+          - { name: web, dockerfile: apps/web/Dockerfile }
+          - { name: notifications-service, dockerfile: services/notifications-service/Dockerfile }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -60,7 +60,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
       - uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.context }}
+          context: .
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }} # enlaza la imagen con el repo y el commit

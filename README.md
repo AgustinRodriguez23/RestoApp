@@ -42,7 +42,7 @@ NestJS · TypeScript · PostgreSQL · MongoDB · RabbitMQ · Redis · React · D
 
 ## Cómo levantarlo
 
-Requisitos: Node 20+ y Docker.
+Requisitos: Node 24+ y Docker.
 
 ```bash
 # 1. Variables de entorno
@@ -729,7 +729,6 @@ Para publicar una versión: `git tag v0.1.0 && git push origin v0.1.0`.
 - **Los workflows ya corrieron en GitHub**: el CI quedó en verde y `release.yml` publicó las 6 imágenes en GHCR. Antes de eso los había validado con *actionlint* y corriendo los mismos comandos en una copia limpia, pero la prueba real fue esa primera corrida.
 - Las versiones de las acciones (`actions/checkout@v4`, `docker/build-push-action@v6`...) son las que conocía; Dependabot las mantiene al día.
 - **No hay etapa de deploy**: se publican imágenes, pero no se despliegan a ningún servidor (todavía no hay un destino definido).
-- Los Dockerfile usan `npm install` (no `npm ci`), así que las imágenes no usan el lockfile; el CI sí lo usa para las pruebas. Pasarlos a `npm ci` requiere construir desde la raíz del monorepo.
 
 ## Notificaciones (`notifications-service`)
 
@@ -778,7 +777,7 @@ reservations ──(outbox)──▶ RabbitMQ ──reservas.events──▶ not
 
 Los servicios usan **NestJS 11** (venían de la 10). La auditoría de producción pasó de **14 vulnerabilidades (4 altas) a 0**: `multer`, `lodash`, `qs`, `body-parser`, `uuid` y `file-type` se arreglaron solos al subir `@nestjs/platform-express`, `@nestjs/swagger` y `@nestjs/typeorm`; la última, `js-yaml`, con un `overrides` en el `package.json` raíz.
 
-**Por qué la 11 y no la 12** (la última): los paquetes de la 12 son solo ESM y Jest necesita Node 24.9 o más para cargarlos; hoy todo (CI, Dockerfiles, `engines`) usa Node 20. La 11 sigue siendo CommonJS, pide Node 20 y deja Jest 29 como está. Se decidió midiendo antes: la 11 ya cerraba 12 de las 14, y las 2 restantes (ambas `js-yaml`, a través de `@nestjs/swagger`) se resolvieron con el `override`. Migrar a la 12 queda para cuando se suba Node.
+**Por qué la 11 y no la 12** (la última): los paquetes de la 12 son solo ESM y Jest necesita Node 24.9 o más para cargarlos; cuando se eligió, todo (CI, Dockerfiles, `engines`) usaba Node 20. La 11 sigue siendo CommonJS y deja Jest 29 como está. Se decidió midiendo antes: la 11 ya cerraba 12 de las 14, y las 2 restantes (ambas `js-yaml`, a través de `@nestjs/swagger`) se resolvieron con el `override`. Ahora que el proyecto usa Node 24, la migración a la 12 ya es posible, pero no aporta nada urgente.
 
 Qué había que revisar de la guía de migración y qué resultó:
 
@@ -871,10 +870,10 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Endurecimiento**: secretos fuertes en producción, límite de intentos de login, tope de reservas sin pagar, headers de seguridad (CSP), healthchecks robustos
 - [x] **N+1 del BFF**: "Mis reservas" de 34 llamadas internas a 3, medido con k6 (ver «El N+1 de Mis reservas»)
 - [x] **Migraciones de TypeORM** en lugar de `synchronize` (ver «Migraciones de la base»)
+- [x] **Imágenes reproducibles**: Node 24 y `npm ci` construyendo desde la raíz del monorepo, donde está el lockfile
 - [ ] **Deploy** en un VPS de Hetzner, en este orden:
   1. `docker-compose.prod.yml`: solo `web` publicado, TLS automático con Caddy, HSTS, sin contraseñas por defecto, Grafana con login, y las imágenes de `release.yml` en vez de construir.
   2. Una ruta pública para los webhooks de la pasarela (`/api/webhooks/gateway` a través de nginx).
-  3. Node 22 (Node 20 ya no tiene soporte) e imágenes con `npm ci`: hoy cada una se construye desde la carpeta de su servicio, donde no está el `package-lock.json` (vive en la raíz del monorepo), así que `npm install` puede traer versiones distintas de las probadas.
 - [ ] **QR de pago con Mercado Pago**: un `MercadoPagoGateway` detrás de la interfaz `PaymentGateway`. Necesita el deploy, porque Mercado Pago avisa el resultado por webhook a una URL pública.
 
 ## Estructura
