@@ -36,7 +36,7 @@ export class ReservationPaymentsController {
     private readonly upstream: UpstreamClient,
     config: ConfigService,
   ) {
-    this.lookupAttempts = Number(config.get('PAYMENT_LOOKUP_ATTEMPTS') ?? 6);
+    this.lookupAttempts = Number(config.get('PAYMENT_LOOKUP_ATTEMPTS') ?? 10);
     this.lookupDelayMs = Number(config.get('PAYMENT_LOOKUP_DELAY_MS') ?? 300);
   }
 
@@ -79,8 +79,8 @@ export class ReservationPaymentsController {
   }
 
   /**
-   * Al reservar, el pago aparece unos milisegundos después (lo crea un evento). Si el usuario aprieta "Pagar"
-   * justo en ese instante, se espera un poco en vez de contestar un 404 confuso.
+   * Al reservar, el pago aparece hasta un par de segundos después (lo crea un evento que sale del outbox). Si el
+   * usuario aprieta "Pagar" justo en ese instante, se espera un poco en vez de contestar un 404 confuso.
    */
   private async findPaymentWhenReady(reservationId: string, ctx: CallContext): Promise<PaymentSummary> {
     for (let attempt = 1; ; attempt++) {

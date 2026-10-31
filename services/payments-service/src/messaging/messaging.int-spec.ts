@@ -312,6 +312,54 @@ describe('mensajería (RabbitMQ + PostgreSQL reales)', () => {
     expect(row.publishedAt).toBeInstanceOf(Date);
   });
 
+  /** Encola 3 eventos, cada uno en su transacción: así created_at (el orden del relay) es distinto. */
+  const enqueueThree = async (ds: DataSource, outbox: OutboxService) => {
+    const envelopes: EventEnvelope[] = [];
+    for (const n of [1, 2, 3]) envelopes.push(await ds.transaction((m) => outbox.enqueue(m, 'demo.batch', { n })));
+    return envelopes;
+  };
+
+  it('publica el lote en orden, sin esperar la confirmación de cada evento para mandar el siguiente', async () => {
+    const { ds, outbox, relay, rabbit } = await buildModule();
+    await ds.getRepository(OutboxMessage).clear();
+    await waitFor(() => rabbit.isUp);
+    const envelopes = await enqueueThree(ds, outbox);
+
+    const started: string[] = [];
+    let confirmAll!: () => void;
+    const allStarted = new Promise<void>((resolve) => (confirmAll = resolve));
+    // Ninguno se confirma hasta que salieron los tres: publicando de a uno, el primero esperaría para siempre
+    const spy = jest.spyOn(rabbit, 'publishEvent').mockImplementation(async (envelope) => {
+      started.push(envelope.id);
+      if (started.length === envelopes.length) confirmAll();
+      await allStarted;
+    });
+
+    expect(await relay.flush()).toBe(3);
+    spy.mockRestore();
+
+    expect(started).toEqual(envelopes.map((envelope) => envelope.id));
+  });
+
+  it('si falla un evento del lote, los demás se publican y solo ese queda para reintentar', async () => {
+    const { ds, outbox, relay, rabbit } = await buildModule();
+    await ds.getRepository(OutboxMessage).clear();
+    await waitFor(() => rabbit.isUp);
+    const [first, second, third] = await enqueueThree(ds, outbox);
+
+    const spy = jest.spyOn(rabbit, 'publishEvent').mockImplementation(async (envelope) => {
+      if (envelope.id === second.id) throw new Error('broker caído');
+    });
+
+    expect(await relay.flush()).toBe(2);
+    spy.mockRestore();
+
+    const rows = ds.getRepository(OutboxMessage);
+    expect((await rows.findOneByOrFail({ id: first.id })).publishedAt).toBeInstanceOf(Date);
+    expect((await rows.findOneByOrFail({ id: third.id })).publishedAt).toBeInstanceOf(Date);
+    expect(await rows.findOneByOrFail({ id: second.id })).toMatchObject({ publishedAt: null, attempts: 1, lastError: 'broker caído' });
+  });
+
   it('varios relays en paralelo no publican nunca dos veces lo mismo (SKIP LOCKED)', async () => {
     const a = await buildModule({ OUTBOX_BATCH_SIZE: '7' });
     const b = await buildModule({ OUTBOX_BATCH_SIZE: '7' });
