@@ -41,7 +41,8 @@ services:
 
   auth-service:
     build:
-      context: ./services/auth-service
+      context: .
+      dockerfile: services/auth-service/Dockerfile
     container_name: auth-service
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
@@ -90,7 +91,8 @@ services:
 
   restaurants-service:
     build:
-      context: ./services/restaurants-service
+      context: .
+      dockerfile: services/restaurants-service/Dockerfile
     container_name: restaurants-service
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
@@ -158,7 +160,8 @@ services:
 
   reservations-service:
     build:
-      context: ./services/reservations-service
+      context: .
+      dockerfile: services/reservations-service/Dockerfile
     container_name: reservations-service
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
@@ -241,7 +244,8 @@ services:
 
   payments-service:
     build:
-      context: ./services/payments-service
+      context: .
+      dockerfile: services/payments-service/Dockerfile
     container_name: payments-service
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
@@ -296,7 +300,8 @@ services:
 
   notifications-service:
     build:
-      context: ./services/notifications-service
+      context: .
+      dockerfile: services/notifications-service/Dockerfile
     container_name: notifications-service
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
@@ -319,7 +324,8 @@ services:
 
   web-bff:
     build:
-      context: ./services/web-bff
+      context: .
+      dockerfile: services/web-bff/Dockerfile
     container_name: web-bff
     labels:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
@@ -420,7 +426,8 @@ services:
 
   web:
     build:
-      context: ./apps/web
+      context: .
+      dockerfile: apps/web/Dockerfile
     container_name: web
     restart: unless-stopped
     depends_on:

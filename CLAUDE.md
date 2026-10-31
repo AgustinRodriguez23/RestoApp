@@ -22,7 +22,7 @@ El `README.md` tiene la arquitectura y las decisiones de diseño de cada fase: l
 | `services/web-bff` | única puerta del frontend; valida JWT y reenvía | — | 3000 |
 | `apps/web` | React + Vite + TypeScript + Tailwind, React Query | — | 5173 |
 
-NestJS 11 (Express 5, Node 20+). Infra: RabbitMQ, Redis, Loki + Grafana.
+NestJS 11 (Express 5, Node 24+). Infra: RabbitMQ, Redis, Loki + Grafana.
 
 ## Comandos
 

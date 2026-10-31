@@ -1,19 +1,25 @@
+# Se construye desde la raíz del monorepo (ver "context" en docker-compose.yml), donde está el package-lock.json:
+# npm ci instala exactamente las versiones que probó el CI. Solo hace falta el package.json de este servicio.
+
 # ---- Etapa 1: build ----
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
-COPY package.json ./
-RUN npm install
-COPY tsconfig.json tsconfig.build.json nest-cli.json ./
-COPY src ./src
-RUN npm run build
+COPY package.json package-lock.json ./
+COPY services/restaurants-service/package.json services/restaurants-service/
+RUN npm ci -w restaurants-service
+COPY services/restaurants-service/tsconfig.json services/restaurants-service/tsconfig.build.json services/restaurants-service/nest-cli.json services/restaurants-service/
+COPY services/restaurants-service/src services/restaurants-service/src
+RUN npm run build -w restaurants-service
 
 # ---- Etapa 2: imagen final (solo dependencias de producción) ----
-FROM node:20-alpine AS runtime
+FROM node:24-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev && npm cache clean --force
-COPY --from=build /app/dist ./dist
+COPY package.json package-lock.json ./
+COPY services/restaurants-service/package.json services/restaurants-service/
+RUN npm ci -w restaurants-service --omit=dev && npm cache clean --force
+COPY --from=build /app/services/restaurants-service/dist services/restaurants-service/dist
+WORKDIR /app/services/restaurants-service
 USER node
 EXPOSE 3002
 CMD ["node", "dist/main"]

@@ -1,0 +1,11 @@
+# Todo afuera salvo lo que usan los Dockerfile: el contexto es la raíz del repo, donde están .env y .git.
+*
+!package.json
+!package-lock.json
+!services
+!apps
+**/node_modules
+**/dist
+**/coverage
+**/.env*
+**/*.log
