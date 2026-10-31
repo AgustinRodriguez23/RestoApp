@@ -55,27 +55,34 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
         .limit(this.batchSize)
         .getMany();
 
-      let published = 0;
-      for (const message of pending) {
-        try {
+      // Se mandan todos y recién después se espera a RabbitMQ: confirmar de a uno hace que cada evento haga cola
+      // detrás del anterior. El orden se mantiene: los publish salen en este orden, por el mismo canal.
+      const results = await Promise.allSettled(
+        pending.map((message) =>
           // Se publica con el contexto del evento, así el log lleva el correlationId de la saga original
-          await runWithContext({ correlationId: message.payload.correlationId }, async () => {
+          runWithContext({ correlationId: message.payload.correlationId }, async () => {
             await this.rabbit.publishEvent(message.payload);
             this.logger.log(`Evento publicado: ${message.type} (${message.id})`);
-          });
+          }),
+        ),
+      );
+
+      let published = 0;
+      for (const [index, result] of results.entries()) {
+        const message = pending[index];
+        if (result.status === 'fulfilled') {
           await manager.update(OutboxMessage, { id: message.id }, { publishedAt: new Date(), lastError: null });
           published++;
-        } catch (error) {
+        } else {
+          const reason = (result.reason as Error).message;
           const attempts = message.attempts + 1;
           const delayMs = Math.min(2 ** attempts * 1000, 5 * 60_000);
           await manager.update(
             OutboxMessage,
             { id: message.id },
-            { attempts, nextAttemptAt: new Date(Date.now() + delayMs), lastError: (error as Error).message },
+            { attempts, nextAttemptAt: new Date(Date.now() + delayMs), lastError: reason },
           );
-          this.logger.warn(
-            `No se pudo publicar ${message.type} (${message.id}), intento ${attempts}: ${(error as Error).message}`,
-          );
+          this.logger.warn(`No se pudo publicar ${message.type} (${message.id}), intento ${attempts}: ${reason}`);
         }
       }
       return published;
