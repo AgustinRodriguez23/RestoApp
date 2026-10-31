@@ -16,7 +16,7 @@ COPY apps/web/src apps/web/src
 RUN npm run build -w web
 
 # ---- Etapa 2: nginx sirve los estáticos y reenvía /api al BFF ----
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.29-alpine AS runtime
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY apps/web/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
