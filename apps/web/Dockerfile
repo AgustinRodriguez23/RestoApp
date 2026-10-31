@@ -2,7 +2,7 @@
 # npm ci instala exactamente las versiones que probó el CI. Solo hace falta el package.json de la app.
 
 # ---- Etapa 1: build de la app (Vite genera archivos estáticos) ----
-FROM node:24-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 # Más paciencia con el registro de npm (en redes lentas el build cortaba con ETIMEDOUT)
 ENV npm_config_fetch_retries=5     npm_config_fetch_timeout=300000     npm_config_fetch_retry_mintimeout=20000
