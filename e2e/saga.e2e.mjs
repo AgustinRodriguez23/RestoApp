@@ -121,6 +121,11 @@ async function main() {
   const payment = async (id, token = customer) => (await http('GET', `${BFF}/reservations/${id}/payment`, { token })).body;
   const pay = (id, tok, key = randomUUID(), token = customer) =>
     http('POST', `${BFF}/reservations/${id}/pay`, { token, headers: { 'idempotency-key': key }, body: { token: tok } });
+  // Para cuando pagar es solo un paso previo del escenario: si falla, que se vea acá y no como un timeout más adelante
+  const payOk = async (id, tok, token = customer) => {
+    const res = await pay(id, tok, randomUUID(), token);
+    if (res.status !== 200) throw new Error(`No se pudo pagar la reserva ${id}: ${res.status} ${JSON.stringify(res.body)}`);
+  };
   const waitStatus = (id, status, token = customer) => waitFor(`reserva ${id} → ${status}`, async () => (await reservation(id, token)).status === status);
 
   // ------------------------------------------------------------------ 0
@@ -240,7 +245,7 @@ async function main() {
   {
     const day = freshDay();
     const r = (await reserve(slot(day))).body;
-    await pay(r.id, 'tok_approved');
+    await payOk(r.id, 'tok_approved');
     await waitStatus(r.id, 'CONFIRMED');
 
     const cancelled = await http('POST', `${BFF}/reservations/${r.id}/cancel`, { token: customer });
@@ -267,7 +272,7 @@ async function main() {
     const day = freshDay();
     const created = (await reserve(slot(day, '21:00'))).body;
     if (created.status === 'PENDING_PAYMENT') {
-      await pay(created.id, 'tok_approved');
+      await payOk(created.id, 'tok_approved');
       await waitStatus(created.id, 'CONFIRMED');
     }
     const ownerList = (token, query = '') => http('GET', `${BFF}/owner/restaurants/${restaurantId}/reservations?${query}`, { token });
@@ -427,7 +432,7 @@ async function main() {
 
     // a) pago aprobado → "Reserva confirmada"
     const ok = (await reserve(slot(day, '12:00'), {}, buyer)).body;
-    await pay(ok.id, 'tok_approved', randomUUID(), buyer);
+    await payOk(ok.id, 'tok_approved', buyer);
     await waitStatus(ok.id, 'CONFIRMED', buyer);
     await waitFor('notificación de reserva confirmada', async () => (await inbox()).total >= 1);
     const confirmed = (await inbox()).data.find((n) => n.reservationId === ok.id);
@@ -436,7 +441,7 @@ async function main() {
 
     // b) pago rechazado → "No se pudo cobrar la seña"
     const bad = (await reserve(slot(day, '14:00'), {}, buyer)).body;
-    await pay(bad.id, 'tok_declined', randomUUID(), buyer);
+    await payOk(bad.id, 'tok_declined', buyer);
     await waitStatus(bad.id, 'CANCELLED', buyer);
     await waitFor('notificación de pago fallido', async () => (await inbox()).data.some((n) => n.reservationId === bad.id));
     const failedNote = (await inbox()).data.find((n) => n.reservationId === bad.id);
@@ -444,7 +449,7 @@ async function main() {
 
     // c) cancela el dueño una reserva confirmada → además de su confirmación, llega el aviso de cancelación (con lo que pasa con la seña)
     const byOwner = (await reserve(slot(day, '16:00'), {}, buyer)).body;
-    await pay(byOwner.id, 'tok_approved', randomUUID(), buyer);
+    await payOk(byOwner.id, 'tok_approved', buyer);
     await waitStatus(byOwner.id, 'CONFIRMED', buyer);
     await http('POST', `${BFF}/reservations/${byOwner.id}/cancel`, { token: owner });
     await waitFor('notificación de cancelación del restaurante', async () => (await inbox()).data.some((n) => n.type === 'RESERVATION_CANCELLED_BY_RESTAURANT'));
