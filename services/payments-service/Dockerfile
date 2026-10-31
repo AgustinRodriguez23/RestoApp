@@ -2,7 +2,7 @@
 # npm ci instala exactamente las versiones que probó el CI. Solo hace falta el package.json de este servicio.
 
 # ---- Etapa 1: build ----
-FROM node:24-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY services/payments-service/package.json services/payments-service/
@@ -12,7 +12,7 @@ COPY services/payments-service/src services/payments-service/src
 RUN npm run build -w payments-service
 
 # ---- Etapa 2: imagen final (solo dependencias de producción) ----
-FROM node:24-alpine AS runtime
+FROM node:25-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json ./
