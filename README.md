@@ -316,12 +316,12 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
   | `POST /auth/register` | IP | 30 | Crear cuentas en masa |
 
   Pasado el límite responde **429** con el formato de error de siempre (el front muestra el mensaje tal cual) y `Retry-After-<límite>` en segundos; el pedido ni llega a auth-service. La clave de cuenta es IP + email y no el email solo: si no, cualquiera podría bloquearle el login a otra persona escribiendo mal su contraseña desde otro lado.
-- **La IP real detrás de nginx (`TRUST_PROXY`)**: nginx agrega la IP del cliente al final de `X-Forwarded-For`, y con `TRUST_PROXY=1` (ya puesto en el compose) el BFF toma justo esa. Sin esto, todo el tráfico del navegador tendría la IP de nginx: un solo contador para todos, y un atacante bloquearía el login de todo el mundo. Probado: 11 intentos por nginx con un `X-Forwarded-For` inventado distinto en cada uno dan 429 igual.
+- **La IP real detrás de nginx (`TRUST_PROXY`)**: nginx agrega la IP del cliente al final de `X-Forwarded-For`, y con `TRUST_PROXY=1` (ya puesto en el compose) el BFF toma justo esa. Sin esto, todo el tráfico del navegador tendría la IP de nginx: un solo contador para todos, y un atacante bloquearía el login de todo el mundo. Probado: 11 intentos por nginx con un `X-Forwarded-For` inventado distinto en cada uno dan 429 igual. En producción hay un salto más, Caddy, y va `TRUST_PROXY=2` (ver «Producción»).
 - **Headers de seguridad con `helmet`** (en `app.setup.ts`, así los tests usan la misma configuración): `nosniff`, no dejarse meter en iframes de otro sitio, CSP y sin `X-Powered-By: Express` (no le regala a nadie qué framework probar). La CSP es la de helmet, que deja andar el Swagger de `/docs`. Se sacan HSTS y `upgrade-insecure-requests` porque suponen HTTPS: el segundo, además, rompe el Swagger abierto por IP (`http://192.168…:3000/docs` pediría sus archivos por https). Los servicios internos no lo tienen: en un deploy no se publican.
 
 ### Limitaciones conocidas
 
-- Los contadores de intentos viven en la memoria del BFF: se reinician al reiniciarlo (`docker compose restart web-bff`, útil si corrés el e2e muchas veces seguidas) y con varias instancias cada una contaría por su lado; ahí habría que pasarlos a Redis. En el compose de desarrollo el puerto 3000 del BFF está publicado: pegándole directo (sin nginx) se puede inventar el `X-Forwarded-For` y saltear el límite por IP, y auth-service (3001) también se puede llamar directo. En un deploy solo se publica `web`.
+- Los contadores de intentos viven en la memoria del BFF: se reinician al reiniciarlo (`docker compose restart web-bff`, útil si corrés el e2e muchas veces seguidas) y con varias instancias cada una contaría por su lado; ahí habría que pasarlos a Redis. En el compose de desarrollo el puerto 3000 del BFF está publicado: pegándole directo (sin nginx) se puede inventar el `X-Forwarded-For` y saltear el límite por IP, y auth-service (3001) también se puede llamar directo. En producción solo se publica Caddy.
 - Sin caché propio: `/reservations/mine` consulta restaurants-service en cada llamada (desde la Fase 8 ese servicio responde desde Redis; ver «Fase 8»).
 - Del dueño están las reservas del local, la gestión del restaurante (mesas y horarios) y su carta (ver «Panel del dueño»).
 - Los DTOs de entrada están duplicados respecto de cada servicio; si cambian allá hay que actualizarlos acá.
@@ -478,7 +478,7 @@ Limitación: a 320 px (celulares muy chicos) el último link de la navegación q
 
 - **El panel del dueño cubre reservas, restaurante y carta** (ver «Panel del dueño»); incluye el resumen del día.
 - El **token se guarda en `localStorage`**: sobrevive al F5 pero un script malicioso (XSS) podría leerlo. La CSP lo hace mucho más difícil (un script inyectado no corre ni puede mandar el token afuera), pero lo más seguro sería que el BFF lo entregue en una cookie `httpOnly`.
-- **Sin HSTS** (`Strict-Transport-Security`): obliga a usar HTTPS y por HTTP el navegador lo ignora. Va con el TLS del deploy, en el proxy que lo termine, igual que `upgrade-insecure-requests`.
+- **HSTS** (`Strict-Transport-Security`) no está en nginx: obliga a usar HTTPS y por HTTP el navegador lo ignora. Lo pone Caddy, el que termina el TLS (ver «Producción»). `upgrade-insecure-requests` no hace falta: todo es del mismo origen, y HSTS ya obliga a HTTPS.
 - Los **tests** cubren la lógica y las pantallas con un servidor falso (`fetch` simulado); no hay todavía pruebas con un navegador real contra el stack (lo recorrí a mano con Playwright, pero ese script no está en el repo).
 - Solo tema claro; sin traducciones (todo en español rioplatense).
 
@@ -853,6 +853,56 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - La correlación con **mensajes asíncronos** (RabbitMQ) se resolvió en la Fase 6: el `correlationId` viaja dentro de cada evento (y en el header `x-correlation-id` del mensaje) y los consumidores lo restauran, así una saga completa se sigue con un solo id en Grafana.
 - Sin Docker en mi entorno no pude probar la parte de contenedores (descubrimiento por socket, Grafana cargando el dashboard); sí probé Loki y Alloy reales leyendo archivos y todas las consultas del dashboard.
 
+## Producción (`docker-compose.prod.yml`)
+
+```
+Internet → Caddy (TLS, HSTS) → web (nginx: estáticos y /api) → web-bff → servicios
+                                   └─ /api/webhooks/gateway → payments-service
+```
+
+Para levantarlo en un servidor, con el dominio ya apuntando a su IP:
+
+```bash
+cp .env.prod.example .env                      # completar: lo vacío es obligatorio
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Para actualizar, `docker compose -f docker-compose.prod.yml pull` y el mismo `up -d`. Para volver atrás, `IMAGE_TAG=sha-<commit>` en el `.env`.
+
+### Decisiones que vale la pena mirar
+
+- **Un archivo completo y no un agregado sobre el de desarrollo**: un agregado hereda los puertos y las contraseñas por defecto, y olvidarse de pisar uno publica una base en internet. Se paga con repetir la configuración, pero acá conviene equivocarse para el lado de que algo no arranque.
+- **Solo Caddy publicado**: bases, RabbitMQ, Redis, BFF y servicios se hablan por la red interna de Docker. Grafana se publica solo en `127.0.0.1` y se entra con un túnel SSH, además de pedir login: ni siquiera se ve desde afuera.
+- **Sin contraseñas por defecto** (`${VAR:?}`): si falta una, `docker compose` no arranca y dice cuál. Lo mismo para la pasarela simulada: `ALLOW_SIMULATED_GATEWAY` vale `false` salvo que se acepte a conciencia.
+- **Imágenes de `release.yml` en vez de construir**: en el servidor corre exactamente lo que pasó el CI, y un VPS chico no se queda sin memoria compilando.
+- **`TRUST_PROXY=2`, un salto más que en desarrollo**: Caddy y nginx. Con 1, el BFF tomaría la IP de Caddy como la del cliente y el límite de intentos de login sería un solo contador para todo el mundo. Caddy descarta el `X-Forwarded-For` que manda el cliente, así que tampoco se puede inventar.
+- **El webhook va de nginx directo a payments-service, sin pasar por el BFF**: la firma HMAC se calcula sobre los bytes exactos del cuerpo, y el BFF parsearía el JSON. La ruta es exacta (`location =`): el resto de payments-service sigue sin poder alcanzarse desde afuera. Vive en nginx y no en Caddy para que también exista en desarrollo y el CI la pruebe.
+- **`depends_on` con `restart: true` en `web`**: nginx resuelve los nombres de sus destinos una sola vez, al arrancar. Si un deploy recrea el BFF y le cambia la IP, nginx seguiría llamando a la vieja; así se reinicia junto con él.
+- **Tope a los logs de Docker** (`max-size`): sin él crecen hasta llenar el disco. Lo que importa queda en Loki, 7 días.
+- **Healthcheck de Mongo con `--host "$(hostname)"`**: en el primer arranque el entrypoint levanta un servidor temporal solo en `127.0.0.1`, lo que podía dar un chequeo verde antes de tiempo. Por el nombre del contenedor recién responde el definitivo. El compose de desarrollo todavía no lo tiene.
+
+### Cómo se probó
+
+En local, con volúmenes vacíos (como un primer arranque), las imágenes de ghcr.io y `DOMAIN=localhost` (Caddy usa su propia CA en vez de Let's Encrypt):
+
+- El e2e completo a través de `https://localhost/api`: 99 verificaciones correctas, 0 fallidas. Para eso se publicó `restaurants-service` en un archivo de prueba aparte, porque el e2e crea el restaurante directo contra él.
+- `http` redirige a `https` (308), HSTS sale en la página y en la API, y ningún puerto interno responde desde afuera.
+- Webhook: sin firma da 401; con una firma válida llega a payments-service y da el 404 esperado para un cobro inexistente. Otras rutas de `/api/webhooks/` dan 404.
+- Límite de login: 11 intentos con un `X-Forwarded-For` inventado distinto en cada uno dan 429 igual, y otro cliente con el mismo email sigue dando 401. Con `TRUST_PROXY=1` ese otro cliente da 429: la prueba distingue los dos casos.
+- Recrear el BFF: `web` se reinicia solo y la API y el webhook siguen respondiendo.
+- Grafana: 401 sin login y con `admin/admin`, y con la contraseña del `.env` ve los logs de los 6 servicios en Loki.
+- Consumo después del e2e: ~1,5 GB de memoria en total.
+
+**Todavía no probado**: el certificado real de Let's Encrypt, que necesita un dominio público.
+
+### Limitaciones conocidas
+
+- Un solo servidor: si se cae, se cae todo, y cada deploy tiene un corte de segundos.
+- Sin backups todavía: las bases viven en volúmenes de Docker de esa única máquina.
+- Docker abre los puertos publicados saltándose `ufw`: el firewall tiene que ser el del proveedor.
+- El Swagger del BFF queda público en `/api/docs`.
+- Un webhook con firma válida pero sin `eventId` da 500 en vez de 400. Solo puede mandarlo quien tiene el secreto.
+
 ## Hoja de ruta
 
 - [x] **Fase 1**: monorepo, `docker-compose`, `auth-service` con Swagger y tests
@@ -872,8 +922,9 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 - [x] **Migraciones de TypeORM** en lugar de `synchronize` (ver «Migraciones de la base»)
 - [x] **Imágenes reproducibles**: Node 24 y `npm ci` construyendo desde la raíz del monorepo, donde está el lockfile
 - [ ] **Deploy** en un VPS de Hetzner, en este orden:
-  1. `docker-compose.prod.yml`: solo `web` publicado, TLS automático con Caddy, HSTS, sin contraseñas por defecto, Grafana con login, y las imágenes de `release.yml` en vez de construir.
-  2. Una ruta pública para los webhooks de la pasarela (`/api/webhooks/gateway` a través de nginx).
+  1. [x] `docker-compose.prod.yml`: solo Caddy publicado, TLS automático, HSTS, sin contraseñas por defecto, Grafana con login, y las imágenes de `release.yml` en vez de construir (ver «Producción»).
+  2. [x] Una ruta pública para los webhooks de la pasarela (`/api/webhooks/gateway` a través de nginx).
+  3. [ ] Crear el VPS, apuntar el dominio y levantarlo.
 - [ ] **QR de pago con Mercado Pago**: un `MercadoPagoGateway` detrás de la interfaz `PaymentGateway`. Necesita el deploy, porque Mercado Pago avisa el resultado por webhook a una URL pública.
 
 ## Estructura
@@ -882,8 +933,11 @@ Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más d
 reservas-platform/
 ├── package.json            # npm workspaces
 ├── eslint.config.mjs       # una sola configuración de lint para todo el repo
-├── docker-compose.yml
+├── docker-compose.yml      # desarrollo
+├── docker-compose.prod.yml # producción (ver «Producción»)
+├── Caddyfile               # TLS y HSTS en producción
 ├── .env.example
+├── .env.prod.example
 ├── e2e/                    # prueba de punta a punta de la saga
 ├── perf/                   # pruebas de carga con k6, datos de prueba y comparador (Fase 8)
 ├── observability/          # Loki, Alloy, Grafana
