@@ -1,0 +1,358 @@
+# Producción: docker compose -f docker-compose.prod.yml up -d  (variables en .env; ver .env.prod.example)
+#
+# Es un archivo completo y no un agregado sobre docker-compose.yml a propósito: un agregado hereda los puertos y las
+# contraseñas por defecto del de desarrollo, y olvidarse de pisar uno solo publicaría una base en internet.
+#
+# Internet -> Caddy (TLS y HSTS) -> web (nginx: estáticos y /api) -> web-bff -> servicios
+# Lo único publicado en internet es Caddy. Todo lo demás se habla por la red interna de Docker, por nombre.
+# "name" separa contenedores, redes y volúmenes de los de desarrollo aunque convivan en la misma máquina.
+name: reservas-prod
+
+# Sin tope, los logs de Docker crecen hasta llenar el disco del servidor. Los de los servicios quedan 7 días en Loki.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Cada anclaje (&) es un bloque que se repite con "<<: *nombre"
+x-infra: &infra
+  restart: unless-stopped
+  logging: *logging
+
+# Bases y RabbitMQ: ver en docker-compose.yml por qué el stop_grace_period y los healthchecks son así
+x-database: &database
+  <<: *infra
+  stop_grace_period: 1m
+
+# Los datos del chequeo que comparten las bases; cada una le suma el comando que le corresponde
+x-postgres-healthcheck: &postgres-healthcheck
+  interval: 5s
+  timeout: 5s
+  retries: 10
+  start_period: 3m
+  start_interval: 1s
+
+# En el primer arranque, el entrypoint de mongo levanta un servidor temporal (solo en 127.0.0.1) para crear el usuario
+# y después lo reinicia. Con --host "$(hostname)" el chequeo no se conforma con ese temporal: espera al definitivo.
+x-mongo-healthcheck: &mongo-healthcheck
+  test: ["CMD-SHELL", "mongosh --host \"$$(hostname)\" --quiet --eval \"db.adminCommand('ping').ok\""]
+  interval: 5s
+  timeout: 20s
+  retries: 10
+  start_period: 2m
+  start_interval: 3s
+
+# Servicios Node: las imágenes que publica release.yml, solo si pasó el CI. Con IMAGE_TAG=sha-<commit> se vuelve a una anterior.
+x-app: &app
+  <<: *infra
+  labels:
+    logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
+  healthcheck:
+    test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$$PORT/health || exit 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+    start_period: 60s
+    start_interval: 2s
+
+services:
+  # ---------- La única puerta de entrada ----------
+  caddy:
+    <<: *infra
+    image: caddy:2.10-alpine
+    depends_on:
+      - web
+    environment:
+      DOMAIN: ${DOMAIN:?Definí DOMAIN en el archivo .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Definí ACME_EMAIL en el archivo .env}
+    ports:
+      - "80:80" # Let's Encrypt valida por acá, y Caddy redirige el resto a https
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Los certificados: sin este volumen se pedirían de nuevo en cada arranque hasta chocar con el límite de Let's Encrypt
+      - caddy-data:/data
+      - caddy-config:/config
+
+  web:
+    <<: *infra
+    image: ghcr.io/agustinrodriguez23/restoapp/web:${IMAGE_TAG:-latest}
+    # nginx resuelve estos nombres una sola vez, al arrancar. Si se recrea uno de estos contenedores (cada deploy) puede
+    # cambiarle la IP y nginx seguiría llamando a la vieja: restart hace que se reinicie junto con ellos.
+    depends_on:
+      web-bff:
+        condition: service_started
+        restart: true
+      payments-service:
+        condition: service_healthy
+        restart: true
+
+  web-bff:
+    <<: *app
+    image: ghcr.io/agustinrodriguez23/restoapp/web-bff:${IMAGE_TAG:-latest}
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      restaurants-service:
+        condition: service_healthy
+      reservations-service:
+        condition: service_healthy
+      payments-service:
+        condition: service_healthy
+      notifications-service:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      AUTH_SERVICE_URL: http://auth-service:3001
+      RESTAURANTS_SERVICE_URL: http://restaurants-service:3002
+      RESERVATIONS_SERVICE_URL: http://reservations-service:3003
+      PAYMENTS_SERVICE_URL: http://payments-service:3004
+      NOTIFICATIONS_SERVICE_URL: http://notifications-service:3005
+      CORS_ORIGIN: https://${DOMAIN:?Definí DOMAIN en el archivo .env}
+      UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-3000}
+      # Dos saltos: Caddy y nginx. Caddy descarta el X-Forwarded-For que manda el cliente y pone la IP real, así que
+      # no se puede inventar. Con 1, el BFF tomaría la IP de Caddy: un solo contador de intentos de login para todos.
+      TRUST_PROXY: 2
+
+  # ---------- Servicios ----------
+  auth-service:
+    <<: *app
+    image: ghcr.io/agustinrodriguez23/restoapp/auth-service:${IMAGE_TAG:-latest}
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+    environment:
+      PORT: 3001
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_HOST: postgres-auth
+      DB_PORT: 5432
+      DB_USER: ${AUTH_DB_USER:-auth}
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en el archivo .env}
+      DB_NAME: ${AUTH_DB_NAME:-auth_db}
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      ALLOW_OWNER_SELF_REGISTER: ${ALLOW_OWNER_SELF_REGISTER:-false}
+
+  restaurants-service:
+    <<: *app
+    image: ghcr.io/agustinrodriguez23/restoapp/restaurants-service:${IMAGE_TAG:-latest}
+    depends_on:
+      mongo-restaurants:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: 3002
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      REDIS_URL: redis://redis:6379
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-60}
+      MONGO_URI: mongodb://${RESTAURANTS_MONGO_USER:-restaurants}:${RESTAURANTS_MONGO_PASSWORD:?Definí RESTAURANTS_MONGO_PASSWORD en el archivo .env}@mongo-restaurants:27017/${RESTAURANTS_MONGO_DB:-restaurants_db}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+
+  reservations-service:
+    <<: *app
+    image: ghcr.io/agustinrodriguez23/restoapp/reservations-service:${IMAGE_TAG:-latest}
+    depends_on:
+      postgres-reservations:
+        condition: service_healthy
+      restaurants-service:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PORT: 3003
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_HOST: postgres-reservations
+      DB_PORT: 5432
+      DB_USER: ${RESERVATIONS_DB_USER:-reservations}
+      DB_PASSWORD: ${RESERVATIONS_DB_PASSWORD:?Definí RESERVATIONS_DB_PASSWORD en el archivo .env}
+      DB_NAME: ${RESERVATIONS_DB_NAME:-reservations_db}
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      RESTAURANTS_SERVICE_URL: http://restaurants-service:3002
+      RESTAURANT_TIME_ZONE: ${RESTAURANT_TIME_ZONE:-America/Argentina/Buenos_Aires}
+      RESERVATION_DURATION_MINUTES: ${RESERVATION_DURATION_MINUTES:-90}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:?Definí RABBITMQ_PASSWORD en el archivo .env}@rabbitmq:5672
+      DEPOSIT_PER_PERSON_CENTS: ${DEPOSIT_PER_PERSON_CENTS:-200000}
+      DEPOSIT_CURRENCY: ${DEPOSIT_CURRENCY:-ARS}
+      PAYMENT_WINDOW_MINUTES: ${PAYMENT_WINDOW_MINUTES:-15}
+      MAX_PENDING_RESERVATIONS: ${MAX_PENDING_RESERVATIONS:-3}
+      REFUND_CUTOFF_HOURS: ${REFUND_CUTOFF_HOURS:-24}
+
+  payments-service:
+    <<: *app
+    image: ghcr.io/agustinrodriguez23/restoapp/payments-service:${IMAGE_TAG:-latest}
+    depends_on:
+      postgres-payments:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PORT: 3004
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_HOST: postgres-payments
+      DB_PORT: 5432
+      DB_USER: ${PAYMENTS_DB_USER:-payments}
+      DB_PASSWORD: ${PAYMENTS_DB_PASSWORD:?Definí PAYMENTS_DB_PASSWORD en el archivo .env}
+      DB_NAME: ${PAYMENTS_DB_NAME:-payments_db}
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:?Definí RABBITMQ_PASSWORD en el archivo .env}@rabbitmq:5672
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-simulated}
+      # Por defecto en false: si no se acepta a conciencia que los pagos son de mentira, payments no arranca
+      ALLOW_SIMULATED_GATEWAY: ${ALLOW_SIMULATED_GATEWAY:-false}
+      GATEWAY_WEBHOOK_SECRET: ${GATEWAY_WEBHOOK_SECRET:?Definí GATEWAY_WEBHOOK_SECRET en el archivo .env}
+      SIMULATED_WEBHOOK_DELAY_MS: ${SIMULATED_WEBHOOK_DELAY_MS:-3000}
+
+  notifications-service:
+    <<: *app
+    image: ghcr.io/agustinrodriguez23/restoapp/notifications-service:${IMAGE_TAG:-latest}
+    depends_on:
+      mongo-notifications:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PORT: 3005
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MONGO_URI: mongodb://${NOTIFICATIONS_MONGO_USER:-notifications}:${NOTIFICATIONS_MONGO_PASSWORD:?Definí NOTIFICATIONS_MONGO_PASSWORD en el archivo .env}@mongo-notifications:27017/${NOTIFICATIONS_MONGO_DB:-notifications_db}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:?Definí RABBITMQ_PASSWORD en el archivo .env}@rabbitmq:5672
+
+  # ---------- Bases, caché y mensajería (sin ningún puerto publicado) ----------
+  postgres-auth:
+    <<: *database
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${AUTH_DB_USER:-auth}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:?Definí AUTH_DB_PASSWORD en el archivo .env}
+      POSTGRES_DB: ${AUTH_DB_NAME:-auth_db}
+    volumes:
+      - postgres-auth-data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *postgres-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U ${AUTH_DB_USER:-auth} -d ${AUTH_DB_NAME:-auth_db}"]
+
+  postgres-reservations:
+    <<: *database
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${RESERVATIONS_DB_USER:-reservations}
+      POSTGRES_PASSWORD: ${RESERVATIONS_DB_PASSWORD:?Definí RESERVATIONS_DB_PASSWORD en el archivo .env}
+      POSTGRES_DB: ${RESERVATIONS_DB_NAME:-reservations_db}
+    volumes:
+      - postgres-reservations-data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *postgres-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U ${RESERVATIONS_DB_USER:-reservations} -d ${RESERVATIONS_DB_NAME:-reservations_db}"]
+
+  postgres-payments:
+    <<: *database
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${PAYMENTS_DB_USER:-payments}
+      POSTGRES_PASSWORD: ${PAYMENTS_DB_PASSWORD:?Definí PAYMENTS_DB_PASSWORD en el archivo .env}
+      POSTGRES_DB: ${PAYMENTS_DB_NAME:-payments_db}
+    volumes:
+      - postgres-payments-data:/var/lib/postgresql/data
+    healthcheck:
+      <<: *postgres-healthcheck
+      test: ["CMD-SHELL", "pg_isready -U ${PAYMENTS_DB_USER:-payments} -d ${PAYMENTS_DB_NAME:-payments_db}"]
+
+  mongo-restaurants:
+    <<: *database
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${RESTAURANTS_MONGO_USER:-restaurants}
+      MONGO_INITDB_ROOT_PASSWORD: ${RESTAURANTS_MONGO_PASSWORD:?Definí RESTAURANTS_MONGO_PASSWORD en el archivo .env}
+    volumes:
+      - mongo-restaurants-data:/data/db
+    healthcheck: *mongo-healthcheck
+
+  mongo-notifications:
+    <<: *database
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${NOTIFICATIONS_MONGO_USER:-notifications}
+      MONGO_INITDB_ROOT_PASSWORD: ${NOTIFICATIONS_MONGO_PASSWORD:?Definí NOTIFICATIONS_MONGO_PASSWORD en el archivo .env}
+    volumes:
+      - mongo-notifications-data:/data/db
+    healthcheck: *mongo-healthcheck
+
+  redis:
+    <<: *infra
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "volatile-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+      start_interval: 1s
+
+  rabbitmq:
+    <<: *database
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-reservas}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Definí RABBITMQ_PASSWORD en el archivo .env}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 20s
+      retries: 10
+      start_period: 2m
+      start_interval: 3s
+
+  # ---------- Logs centralizados ----------
+  loki:
+    <<: *infra
+    image: grafana/loki:3.5.0
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+
+  alloy:
+    <<: *infra
+    image: grafana/alloy:v1.20.1
+    command: run --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    depends_on:
+      - loki
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  grafana:
+    <<: *infra
+    image: grafana/grafana:12.2.0
+    depends_on:
+      - loki
+    environment:
+      # Con login y sin la entrada anónima del compose de desarrollo. Ojo: esta contraseña se aplica solo la primera
+      # vez, cuando se crea la base de Grafana. Para cambiarla después: grafana cli admin reset-admin-password
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Definí GRAFANA_ADMIN_PASSWORD en el archivo .env}
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      # Solo desde el propio servidor. Para entrar: ssh -L 3030:localhost:3030 usuario@servidor y abrir http://localhost:3030
+      - "127.0.0.1:3030:3000"
+
+volumes:
+  caddy-data:
+  caddy-config:
+  rabbitmq-data:
+  postgres-payments-data:
+  postgres-auth-data:
+  mongo-restaurants-data:
+  mongo-notifications-data:
+  postgres-reservations-data:
+  loki-data:
+  grafana-data:

@@ -1,0 +1,18 @@
+# Termina el TLS: con un dominio público, Caddy pide y renueva solo el certificado de Let's Encrypt, y redirige http a https.
+# {$VARIABLE} se lee del entorno del contenedor (ver docker-compose.prod.yml).
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	header {
+		# HSTS: el navegador recuerda por un año que este dominio va solo por https. Sin includeSubDomains para no
+		# obligar a otros subdominios, que quizás no tengan https.
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+		-Via
+	}
+
+	# Caddy agrega X-Forwarded-For con la IP real del cliente (descarta el que venga de afuera) y X-Forwarded-Proto
+	reverse_proxy web:80
+}

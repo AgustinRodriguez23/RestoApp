@@ -262,6 +262,8 @@ jobs:
         run: |
           curl -sf http://localhost:5173/ | grep -q '<div id="root">'
           curl -sf http://localhost:5173/api/health | grep -q '"service":"web-bff"'
+          # Sin firma: 401 de payments-service. Un 404 querría decir que nginx la mandó al BFF, que no tiene esa ruta.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:5173/api/webhooks/gateway -H 'content-type: application/json' -d '{}')" = 401
       - name: Saga de la seña
         run: node e2e/saga.e2e.mjs
       - name: Logs de los contenedores (solo si algo falló)
