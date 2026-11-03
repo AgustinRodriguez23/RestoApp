@@ -9,6 +9,8 @@ logs/*
 .DS_Store
 .idea/
 .vscode/
+backups-restoapp/
+ESTADO.md
 
 # Resultados crudos de k6 (se regeneran; lo que vale va resumido en el README)
 perf/results/*.json

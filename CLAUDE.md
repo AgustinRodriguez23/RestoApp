@@ -1,7 +1,7 @@
 # Reservas Platform
 
 Reservas de restaurantes con seña. Monorepo de npm workspaces (`services/*`, `apps/*`).
-El `README.md` tiene la arquitectura y las decisiones de diseño de cada fase: leelo antes de tocar algo grande.
+El `README.md` es el resumen para quien visita el repo. La arquitectura y las decisiones de diseño de cada fase están en `docs/ARQUITECTURA.md`: leelo antes de tocar algo grande.
 
 ## Forma de trabajo
 

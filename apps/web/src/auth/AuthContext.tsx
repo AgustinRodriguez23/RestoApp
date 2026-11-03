@@ -9,7 +9,7 @@ import { api, configureApi } from '../lib/api';
  *
  * El token se guarda en localStorage para sobrevivir a un F5. Es lo más simple, pero cualquier script
  * que corra en la página (XSS) puede leerlo; con cookies httpOnly emitidas por el BFF no sería legible.
- * Queda anotado como mejora (README).
+ * Queda anotado como mejora (docs/ARQUITECTURA.md).
  */
 const STORAGE_KEY = 'reservas.session';
 

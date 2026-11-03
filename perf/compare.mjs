@@ -1,5 +1,5 @@
 /**
- * Compara dos resultados de k6 (--summary-export) y arma una tabla en Markdown lista para pegar en el README.
+ * Compara dos resultados de k6 (--summary-export) y arma una tabla en Markdown lista para pegar en docs/ARQUITECTURA.md.
  *
  * Uso:  node perf/compare.mjs perf/results/before.json perf/results/after.json
  */

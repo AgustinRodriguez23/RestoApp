@@ -1,0 +1,959 @@
+# RestoApp: arquitectura y decisiones de diseño
+
+Documentación técnica completa, fase por fase: qué se hizo, por qué, cómo se probó y qué quedó pendiente. El resumen del proyecto está en el [README](../README.md).
+
+> Estado: **Fases 1 a 9 completas** (la 8, de performance, con mediciones del front y del backend), el **panel del dueño** y el **deploy** en https://restoapp.duckdns.org. Quedan los pendientes de la hoja de ruta.
+
+## Arquitectura objetivo
+
+```
+  React (Vite + TS)
+        │
+        ▼
+  ┌───────────┐        Redis (caché)
+  │  web-bff  │ ◄────────────┐
+  └─────┬─────┘              │
+   ┌────┼────────────┬───────┴────────┐
+   ▼    ▼            ▼                ▼
+ auth  restaurants  reservations   payments
+ (PG)  (MongoDB)    (PG)           (PG)
+                       ▲  │            ▲
+                       └──┴─ RabbitMQ ─┘
+                              │
+                              └──▶ notifications (MongoDB) ◀── también lo consulta el BFF
+
+  Todos → logs JSON con correlationId → Loki → Grafana
+```
+
+| Servicio | Responsabilidad | Base de datos | Puerto | Estado |
+|---|---|---|---|---|
+| `auth-service` | Registro, login, JWT, roles | PostgreSQL | 3001 | ✅ Fase 1 |
+| `restaurants-service` | Restaurantes, mesas, horarios y carta | MongoDB | 3002 | ✅ Fase 2 |
+| `reservations-service` | Reservas, disponibilidad, estados, seña y vencimiento | PostgreSQL | 3003 | ✅ Fase 3 y 6 |
+| `payments-service` | Seña y cobro, idempotencia, webhooks, reembolsos | PostgreSQL | 3004 | ✅ Fase 6 |
+| `notifications-service` | Consume eventos de reservas y arma la bandeja de avisos del cliente | MongoDB | 3005 | ✅ Notificaciones |
+| `web-bff` | Entrada única del frontend, agrega datos | — | 3000 | ✅ Fase 4 |
+| `web` (`apps/web`) | Frontend React: buscar, reservar, pagar la seña | — | 5173 | ✅ Fase 7 |
+| `redis` | Caché de lecturas de `restaurants-service` | — | 6379 | ✅ Fase 8 |
+
+## Stack
+
+NestJS · TypeScript · PostgreSQL · MongoDB · RabbitMQ · Redis · React · Docker · GitHub Actions · Jest
+
+## Cómo levantarlo
+
+Requisitos: Node 24+ y Docker.
+
+```bash
+# 1. Variables de entorno
+cp .env.example .env        # y cambiá JWT_SECRET y GATEWAY_WEBHOOK_SECRET: openssl rand -hex 32
+                            # (con los de ejemplo, los contenedores no arrancan)
+
+# 2. Instalar dependencias de todos los servicios (npm workspaces)
+npm install
+
+# 3a. Todo en contenedores
+npm run up
+
+# 3b. ...o solo las bases en Docker y los servicios en modo desarrollo
+npm run infra:up            # 3 PostgreSQL + MongoDB + RabbitMQ
+npm run dev:auth            # en una terminal
+npm run dev:restaurants     # en otra terminal
+npm run dev:reservations    # en otra terminal
+npm run dev:payments        # en otra terminal
+npm run dev:notifications   # en otra terminal (la bandeja de avisos)
+npm run dev:bff             # en otra terminal (el frontend solo habla con este)
+npm run dev:web             # el frontend: http://localhost:5173
+npm run obs:up              # Loki + Alloy + Grafana (ver «Trazabilidad de logs»)
+```
+
+| Servicio | API | Swagger | Health |
+|---|---|---|---|
+| auth | http://localhost:3001 | http://localhost:3001/docs | http://localhost:3001/health |
+| restaurants | http://localhost:3002 | http://localhost:3002/docs | http://localhost:3002/health |
+| reservations | http://localhost:3003 | http://localhost:3003/docs | http://localhost:3003/health |
+| payments | http://localhost:3004 | http://localhost:3004/docs | http://localhost:3004/health |
+| notifications | http://localhost:3005 | http://localhost:3005/docs | http://localhost:3005/health |
+| RabbitMQ (panel) | http://localhost:15672 (usuario `reservas`, clave `reservas_password`) | — | — |
+| **web-bff** | http://localhost:3000 | http://localhost:3000/docs | http://localhost:3000/health |
+| **web (frontend)** | http://localhost:5173 | — | — |
+
+**Orden de arranque y healthchecks.** Cada contenedor arranca recién cuando lo que necesita está *healthy*: las bases y RabbitMQ antes que los servicios, y los cinco servicios (su `/health` responde 503 si su base no responde) antes que el BFF, así el front no recibe 503 en los primeros segundos. Todos tienen `start_period` (gracia de arranque: un chequeo fallido no cuenta) y `start_interval` (mientras tanto chequean seguido, así quedan healthy apenas están listos). Dos cosas que aparecieron al probarlo en una máquina cargada:
+
+- El chequeo de Mongo (`mongosh`) y el de RabbitMQ son programas pesados: ~1 s en reposo y **más de 10 s** con todo arrancando a la vez, aunque la base ya esté lista. Con `timeout: 5s` el chequeo fallaba solo y `docker compose up` abortaba con «dependency failed to start». Se reprodujo limitando la CPU de Mongo: antes quedaba *unhealthy* a los 137 s; con `timeout: 20s` queda *healthy* a los 24 s.
+- Docker le da a cada contenedor 10 s para apagarse y después lo mata. Con todo apagándose a la vez, Postgres no siempre llegaba a cerrar prolijo («shutdown was interrupted») y al volver pasaba **~2 minutos** recuperándose. Por eso las bases tienen `stop_grace_period: 1m` (cierran en ~3 s; es solo un tope) y Postgres `start_period: 3m`.
+
+### Probar el flujo completo
+
+1. En el Swagger de **auth**, registrá un usuario con `"role": "RESTAURANT_OWNER"` y copiá el `accessToken` (hace falta `ALLOW_OWNER_SELF_REGISTER=true`, que ya viene en `.env.example`; sin esa variable el servicio responde 403).
+2. En el Swagger de **restaurants**, tocá **Authorize** y pegá ese token (el mismo token sirve en los dos servicios).
+3. Creá un restaurante (`POST /restaurants`) con mesas y horarios, agregale platos (`POST /restaurants/{id}/menu-items`) y mirá la carta pública (`GET /restaurants/{id}/menu`).
+4. En el Swagger de **reservations** consultá `GET /availability` (público) con el id del restaurante, un día y la cantidad de personas.
+5. Registrá un usuario `CUSTOMER`, autorizá con su token y reservá con `POST /reservations` usando uno de los horarios devueltos. Probá pedir el mismo horario dos veces: la segunda da 409.
+6. Con la seña activada (`DEPOSIT_PER_PERSON_CENTS` > 0, por defecto sí) la reserva queda `PENDING_PAYMENT`. Pagala con `POST /reservations/{id}/pay` **del BFF** (header `Idempotency-Key` y `{"token": "tok_approved"}`) y mirá cómo pasa a `CONFIRMED`. Todo el recorrido está explicado en «Fase 6: mensajería y pagos».
+
+### Tests
+
+```bash
+npm test                    # todos los servicios
+npm run test:cov
+```
+
+Los tests unitarios no necesitan ninguna base de datos levantada.
+
+### Lint (ESLint)
+
+```bash
+npm run lint        # toda la plataforma, ~20 s; falla con cualquier aviso
+npm run lint:fix    # arregla solo lo que ESLint puede arreglar sin cambiar el sentido
+```
+
+Hay **una sola configuración en la raíz** (`eslint.config.mjs`, formato *flat* de ESLint 9) con secciones por carpeta: servicios NestJS (Node + Jest), frontend (navegador + reglas de hooks de React) y scripts `.mjs` (e2e, perf). ESLint no reemplaza al compilador: `tsc` valida tipos, ESLint busca errores que los tipos no ven.
+
+Decisiones:
+
+- **Nivel `recommended` de ESLint y typescript-eslint**, no el `strict`. Se midió antes de decidir: con ese nivel salían 3 avisos en 298 archivos, así que no hacía falta aflojar ni silenciar nada.
+- **Tres reglas que usan información de tipos**: `no-floating-promises`, `no-misused-promises` y `await-thenable`. Atrapan una promesa que nadie espera, cuyo error se pierde sin ruido. Encontraron 13 casos: los 5 `bootstrap()` de los `main.ts` (si el arranque fallaba no había un manejo explícito; ahora se loguea y el proceso sale con código 1), las llamadas a `navigate()` del front y un servidor HTTP falso de tests que, si un handler explotaba, tiraba el proceso.
+- **`react-hooks/exhaustive-deps`** viene activo (dependencias de `useEffect`/`useCallback`): salió limpio.
+- **Los parámetros sin usar** se permiten con prefijo `_`; sin él son error.
+- **Sin Prettier**: ESLint solo revisa errores, no el formato. Si se suma, que sea una herramienta aparte para no mezclar las dos cosas.
+- El CI corre `npm run lint` como un job propio (en paralelo a los unitarios).
+
+`reservations-service` además tiene **tests de integración contra un PostgreSQL real**, que son los que prueban que no se pueden hacer reservas dobles bajo concurrencia:
+
+```bash
+npm run infra:up                 # necesita postgres-reservations en el puerto 5434
+npm run test:integration -w reservations-service
+```
+
+Usan un schema temporal que borran al terminar (no tocan tus datos). Si tu Postgres está en otro lado, definí `TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` y `TEST_DB_NAME`.
+
+Desde la Fase 6 `reservations-service` y `payments-service` también prueban **contra RabbitMQ real** (reintentos, DLQ, duplicados, reconexión...); `npm run infra:up` levanta todo lo necesario (`RABBITMQ_TEST_URL` si tu broker está en otro lado; `TEST_DB_PORT=5435` para payments):
+
+```bash
+npm run test:integration           # todos los servicios con integración
+```
+
+Y hay una **prueba de punta a punta** que recorre la saga completa contra el sistema en marcha (BFF → reservas ⇄ RabbitMQ ⇄ pagos → pasarela simulada):
+
+```bash
+npm run up                         # o los servicios con dev:* + infra:up
+npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda más)
+```
+
+## Decisiones de diseño (todos los servicios)
+
+- **Una base de datos por servicio**: ningún servicio lee la base de otro.
+- **Autenticación distribuida**: `auth-service` firma el JWT y el resto lo valida localmente con el mismo secreto (sin llamar a auth en cada request). El JWT contiene `sub` (id), `email` y `role`.
+- **Un solo formato de error** en todos los servicios, así el BFF y el frontend los manejan igual:
+
+```json
+{
+  "statusCode": 400,
+  "error": "Bad Request",
+  "message": ["email must be an email"],
+  "path": "/auth/register",
+  "timestamp": "2026-10-10T00:12:05.579Z"
+}
+```
+
+- **Validación estricta de entrada**: se rechazan propiedades que no están en el DTO (evita *mass assignment*; por ejemplo, el cliente no puede elegir el `ownerId`).
+- **Los servicios no arrancan sin `JWT_SECRET`** (falla rápido en vez de correr inseguro). Con `NODE_ENV=production` (las imágenes de Docker) tampoco arrancan con un secreto débil: menos de 32 caracteres o el valor de ejemplo del `.env.example`, tanto en `JWT_SECRET` como en `GATEWAY_WEBHOOK_SECRET`. Con un `JWT_SECRET` adivinable cualquiera firma un token de dueño; con el de los webhooks, un pago aprobado.
+- **Código de seguridad duplicado entre servicios** (guards, roles, filtro de errores): es el costo de la independencia. Cuando haya más servicios conviene moverlo a un paquete compartido del monorepo.
+
+## Migraciones de la base (TypeORM)
+
+`auth-service`, `reservations-service` y `payments-service` definen su esquema con **migraciones** (`src/migrations`), que se aplican al arrancar, antes de atender pedidos (`migrationsRun`). `synchronize` está apagado siempre, también en desarrollo. (restaurants y notifications usan MongoDB, sin esquema.)
+
+Por qué no `synchronize`, que antes creaba las tablas solo:
+
+- **Adivina el cambio** comparando las entidades con la base. Para agrandar un `varchar(300)` a `varchar(301)` genera `DROP COLUMN` + `ADD COLUMN`: borra los datos de esa columna. Lo vi en el test de migraciones, que muestra el SQL que haría falta.
+- **Borraba la restricción anti reservas dobles en cada arranque.** TypeORM elimina las restricciones de exclusión que no figuran en la entidad, y la nuestra la creaba aparte un bootstrap al iniciar. Entre una cosa y la otra la base no protegía las mesas, y con dos instancias, una podía borrarla mientras la otra atendía. Ahora está declarada en la entidad (`@Exclusion`) y la crea la migración.
+
+### Cambiar una entidad
+
+```bash
+npm run infra:up
+npm run migration:generate -w reservations-service -- src/migrations/AgregarAlgo   # compara con tu base local
+# revisar el SQL generado (sacarle "public." a los enums, como en la inicial) y sumarla a src/migrations/index.ts
+npm run migration:run -w reservations-service      # o arrancar el servicio, que la aplica solo
+npm run migration:revert -w reservations-service   # deshace la última
+```
+
+Los scripts usan `src/data-source.ts`, que arma la misma conexión que la app a partir de las variables de entorno o del `.env` de la raíz.
+
+### Decisiones que vale la pena mirar
+
+- **Bases de antes de las migraciones**: la migración inicial ve que las tablas ya existen (las creó `synchronize`), queda registrada y no toca nada. Lo probé con un test y arrancando los servicios contra las bases de Docker que ya tenían datos. No hace falta borrar nada.
+- **Un test que falla si te olvidás de generar la migración** (`src/migrations/migrations.int-spec.ts`, en los tres servicios y en el CI). Aplica las migraciones en un schema vacío y le pide a TypeORM el SQL que faltaría para llegar a las entidades: tiene que salir vacío. También revierte todo y vuelve a aplicar, y prueba una base creada con `synchronize`. Comprobé que falla si cambio una columna sin generar la migración.
+- **Los demás tests de integración también usan las migraciones**, así que prueban el mismo esquema que corre en producción. Para que caigan en el schema temporal de cada test, la conexión fija el `search_path` en ese schema. Por eso las migraciones no nombran el schema, y las extensiones (`uuid-ossp`, `btree_gist`) las crea la migración en `public` y no el driver.
+- **El `down` no borra las extensiones**: son de toda la base y otro schema puede estar usándolas.
+
+### Limitaciones conocidas
+
+- **TypeORM no toma un lock al migrar.** Si dos instancias de un servicio arrancan a la vez con una migración pendiente, una falla y Docker la reinicia, y en el segundo intento la migración ya está aplicada. Con una instancia por servicio, como en el compose, no pasa. Con varias réplicas conviene correr `migration:run` como paso aparte antes del deploy.
+- Las migraciones corren en una transacción: un `CREATE INDEX` sobre una tabla grande la bloquearía mientras dura. Con estos volúmenes no importa. Si importara, esa migración tendría que usar `CONCURRENTLY` fuera de la transacción.
+
+## auth-service
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| POST | `/auth/register` | Registra un usuario y devuelve un JWT. Es `CUSTOMER` salvo que se pida `RESTAURANT_OWNER` y esté activado `ALLOW_OWNER_SELF_REGISTER` (si no, 403: el registro es público y cualquiera se haría dueño) |
+| POST | `/auth/login` | Valida credenciales y devuelve un JWT |
+| GET | `/auth/me` | Datos del usuario autenticado (`Authorization: Bearer <token>`) |
+| GET | `/health` | Estado del servicio y de su base de datos |
+
+- Contraseñas con bcrypt; el hash nunca sale en la API (`select: false` en la entidad).
+- Mismo error **y mismo tiempo** para email inexistente y contraseña incorrecta, para no revelar qué emails están registrados: si el email no existe se compara igual contra un hash de relleno del mismo costo, así el bcrypt (lo más caro del pedido) se paga siempre.
+- Email repetido: 409. Si dos registros con el mismo email llegan a la vez y los dos pasan el chequeo previo, el índice único de la base deja entrar a uno y el otro recibe el mismo 409 (no un 500).
+
+## restaurants-service
+
+| Método | Ruta | Quién | Descripción |
+|---|---|---|---|
+| GET | `/restaurants` | público | Lista paginada. Filtros: `page`, `limit` (máx. 50), `search`, `cuisine` |
+| GET | `/restaurants/:id` | público | Detalle con mesas y horarios |
+| POST | `/restaurants` | `RESTAURANT_OWNER` | Crea un restaurante; el dueño es el usuario del token |
+| PATCH | `/restaurants/:id` | su dueño | Modifica campos sueltos |
+| DELETE | `/restaurants/:id` | su dueño | Elimina el restaurante y su carta |
+| GET | `/restaurants/:id/menu` | público | Carta agrupada por categoría (`?includeUnavailable=true` incluye los no disponibles) |
+| POST | `/restaurants/:id/menu-items` | su dueño | Agrega un plato |
+| PATCH | `/restaurants/:id/menu-items/:itemId` | su dueño | Modifica un plato (ej: marcarlo como no disponible) |
+| DELETE | `/restaurants/:id/menu-items/:itemId` | su dueño | Quita un plato |
+| GET | `/health` | público | Estado del servicio y de MongoDB |
+
+### Decisiones de diseño
+
+- **MongoDB para la carta**: cada plato tiene alérgenos y variantes de estructura variable, algo natural en documentos. Restaurante y carta están en **colecciones separadas**: la carta crece y cambia seguido, y así se modifica un plato sin reescribir todo el restaurante.
+- **Mesas y horarios embebidos** en el restaurante: siempre se leen junto con él y no tienen vida propia.
+- **Dos niveles de permiso**: el rol (`RESTAURANT_OWNER`) se valida en el guard, y que sea el dueño *de ese restaurante* se valida en el servicio (si no, cualquier dueño podría tocar restaurantes ajenos). Los platos se buscan siempre dentro del restaurante indicado.
+- **Precios en centavos (enteros)**: el dinero nunca se guarda como decimal flotante (`0.1 + 0.2 !== 0.3`).
+- **Alérgenos** según los 14 de declaración obligatoria de la UE.
+- **Horarios que cruzan la medianoche**: si `closes` es menor que `opens`, el turno termina al día siguiente (típico de la cena). Un día puede tener varios turnos.
+- **Búsqueda segura**: el texto del usuario se escapa antes de usarlo como expresión regular; los ids de ruta se validan como ObjectId (evita inyección NoSQL).
+- **Referencia lógica, no clave foránea**: `ownerId` guarda el id del usuario de `auth-service`, pero no hay forma de verificar que exista desde acá. Es el costo de tener una base por servicio.
+- Al borrar un restaurante se borra su carta en dos pasos, **sin transacción** (Mongo la exige en réplica). Un fallo a mitad de camino puede dejar platos huérfanos.
+
+## reservations-service
+
+| Método | Ruta | Quién | Descripción |
+|---|---|---|---|
+| GET | `/availability` | público | Horarios libres de un restaurante un día, para N personas (`restaurantId`, `date`, `partySize`) |
+| POST | `/reservations` | usuario autenticado | Crea una reserva; la mesa se asigna sola |
+| GET | `/reservations/mine` | usuario autenticado | Mis reservas, paginadas (`page`, `limit`, `status`) |
+| GET | `/reservations/restaurant/:restaurantId` | dueño del restaurante | Reservas del restaurante (`date`, `status`, paginado) |
+| GET | `/reservations/restaurant/:restaurantId/summary` | dueño del restaurante | **Resumen de un día** (`date` obligatoria): cuántas reservas hay por estado |
+| GET | `/reservations/:id` | quien reservó o el dueño | Detalle |
+| POST | `/reservations/:id/cancel` | quien reservó o el dueño | Cancela, solo antes de que empiece |
+| PATCH | `/reservations/:id/status` | dueño del restaurante | `COMPLETED` o `NO_SHOW`, una vez que la reserva empezó |
+| GET | `/health` | público | Estado del servicio, de PostgreSQL y de RabbitMQ |
+
+### Decisiones de diseño
+
+- **Evitar la reserva doble lo decide la base, no el código.** Chequear "¿está libre?" y después insertar no es seguro si dos requests llegan a la vez: las dos ven la mesa libre. Por eso la tabla tiene una restricción `EXCLUDE USING gist` (con `btree_gist`) sobre `(restaurante, mesa, rango de tiempo)` para las reservas `CONFIRMED`. El servicio simplemente intenta insertar; si PostgreSQL responde `23P01` (solapamiento), prueba con la siguiente mesa apta y, si no queda ninguna, responde **409**. Se probó con 20 pedidos simultáneos sobre una sola mesa: exactamente uno gana.
+- **Rangos `[inicio, fin)`**: una reserva que termina a las 21:30 y otra que empieza a las 21:30 en la misma mesa no se pisan.
+- **Bloquean la mesa las `CONFIRMED` y las `PENDING_PAYMENT`** (esperando la seña): cancelar, vencer o fallar el pago la libera. Al arrancar, si la base tiene la restricción vieja (solo `CONFIRMED`), se reemplaza sola en una transacción.
+- **Tope de reservas esperando la seña: 3 por cliente** (`MAX_PENDING_RESERVATIONS`). Cada `PENDING_PAYMENT` retiene una mesa sin haber pagado nada: sin tope, una sola cuenta podría bloquear el salón entero durante el plazo de pago, y repetirlo cada vez que vence. La cuarta responde **422** (y no 409, que el front lee como "te ganaron el horario") con un mensaje que manda a "Mis reservas" a pagar o cancelar alguna. No cuentan las ya vencidas que el job todavía no pasó a `EXPIRED`, porque ya no se pueden pagar.
+  - **Contar y después insertar tiene la misma carrera que la reserva doble**: dos pedidos simultáneos del mismo cliente cuentan 2 cada uno y entran los dos. Acá no hay restricción de la base que lo exprese, así que la transacción toma un `pg_advisory_xact_lock` por cliente antes de contar: los pedidos de un mismo cliente van en fila (los de clientes distintos, no) y el lock se suelta al confirmar, cuando la reserva del primero ya es visible para el segundo. Se probó con 6 pedidos simultáneos: entran exactamente 3; **sin el lock entraban 5 o 6**.
+- **Asignación automática de mesa**: la más chica en la que entra el grupo, así las mesas grandes quedan para grupos grandes.
+- **Duración fija (90 min) y grilla de 30 min**: simplifica la disponibilidad. Se cambia con `RESERVATION_DURATION_MINUTES` y `RESERVATION_SLOT_STEP_MINUTES`. También `RESERVATION_MAX_ADVANCE_DAYS` (90 por defecto).
+- **Zona horaria**: los horarios del restaurante son hora local (`RESTAURANT_TIME_ZONE`, por defecto Buenos Aires) y las reservas se guardan como instantes UTC (`timestamptz`). Se maneja con `Intl`, sin librerías, incluyendo los turnos que cruzan la medianoche y los cambios de horario de verano. Por ahora es **una sola zona para toda la plataforma**.
+- **Máquina de estados**: `PENDING_PAYMENT → CONFIRMED | CANCELLED | EXPIRED` y `CONFIRMED → CANCELLED | COMPLETED | NO_SHOW`; el resto son finales. Cada transición es un `UPDATE ... WHERE id = ? AND status = <el que leí>`: si dos requests compiten (por ejemplo, dos cancelaciones), solo una gana y la otra recibe 409.
+- **Comunicación síncrona con restaurants-service** (HTTP con timeout de 3 s y un reintento) para conocer mesas y horarios. Si no responde, 503; si responde algo inesperado, 502. reservations no guarda copia de esos datos: cada consulta va a restaurants-service, que desde la Fase 8 sí cachea sus lecturas en Redis.
+- **Recursos ajenos devuelven 404, no 403**: no se revela que una reserva de otra persona existe.
+- **El cliente de una reserva siempre es el usuario del token**; el DTO rechaza `customerId`, `status` o `tableNumber` (*mass assignment*).
+
+### Limitaciones conocidas
+
+- `/availability` es una **foto del momento**: entre que se consulta y se reserva, otra persona puede tomar la mesa, así que reservar puede dar 409 aunque figurara libre. Es lo esperable, y la base lo garantiza.
+- Si el dueño modifica las mesas o los horarios en restaurants-service, las reservas ya hechas **no se revalidan**. Y si una mesa desaparece, sus reservas quedan apuntando a un número que ya no existe.
+- El usuario de la base necesita permiso para `CREATE EXTENSION btree_gist` (en el contenedor ya lo tiene).
+- Con `DEPOSIT_PER_PERSON_CENTS=0` no hay seña y las reservas nacen `CONFIRMED`, como antes de la Fase 6. En ese modo **no hay tope**: una reserva confirmada sin pagar retiene la mesa hasta su horario, y limitar cuántas reservas futuras tiene alguien es otra regla (falta).
+- El tope es por cuenta: alguien con varias cuentas lo multiplica. Lo frena en parte el límite de altas por IP del BFF.
+
+## web-bff
+
+Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servicios y **agrega** datos de varios en una sola respuesta.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| POST | `/auth/register`, `/auth/login` | Reenvían a auth-service, con **límite de intentos** (429, ver abajo) |
+| GET | `/auth/me` | Perfil del usuario |
+| GET | `/restaurants` | Listado con búsqueda y filtros |
+| GET | `/restaurants/:id/overview` | **Agregada**: restaurante + carta + (con `?date=&partySize=`) horarios libres |
+| POST | `/reservations` | Crea la reserva; la respuesta incluye el nombre del restaurante |
+| GET | `/reservations/mine` | Mis reservas, **cada una con el nombre de su restaurante y el estado de su pago** |
+| GET | `/reservations/:id`, POST `/reservations/:id/cancel` | Ver y cancelar |
+| POST | `/reservations/:id/pay` | **Paga la seña** (header `Idempotency-Key` obligatorio): busca el pago de la reserva y cobra |
+| GET | `/reservations/:id/payment` | Estado del pago de la seña |
+| GET | `/me/overview` | **Agregada**: mi perfil + mis próximas 5 reservas + las que esperan el pago |
+| GET | `/owner/restaurants` | **Dueño**: mis restaurantes |
+| GET | `/owner/restaurants/:id/summary` | **Dueño**: resumen de un día (`date`): conteo de reservas por estado |
+| POST | `/owner/restaurants` | **Dueño**: crea un restaurante (el dueño es el del token, nunca el del cuerpo) |
+| PATCH, DELETE | `/owner/restaurants/:id` | **Dueño**: edita datos, mesas y horarios / elimina el restaurante y su carta |
+| GET | `/owner/restaurants/:id/menu` | **Dueño**: su carta completa, **incluyendo los platos pausados** |
+| POST | `/owner/restaurants/:id/menu-items` | **Dueño**: agrega un plato |
+| PATCH, DELETE | `/owner/restaurants/:id/menu-items/:itemId` | **Dueño**: edita, pausa (`available: false`) o quita un plato |
+| GET | `/owner/restaurants/:id/reservations` | **Dueño**: reservas del local (`date`, `status`, `page`, `limit`) |
+| PATCH | `/owner/reservations/:id/status` | **Dueño**: `COMPLETED` (asistió) o `NO_SHOW` (no vino). Para cancelar se usa `POST /reservations/:id/cancel`, que ya acepta al dueño |
+| GET | `/health` | Estado del BFF y de cada servicio (`ok` / `degraded`) |
+
+### Decisiones de diseño
+
+- **Agregación en paralelo con degradación parcial.** `overview` pide restaurante, carta y disponibilidad a la vez (`Promise.all`). Lo imprescindible (el restaurante, el perfil) propaga el error si falla; lo complementario (carta, disponibilidad, reservas) se devuelve en `null` con un aviso en `warnings`, así la pantalla se muestra igual.
+- **Un solo cliente HTTP (`UpstreamClient`)** con timeout en toda llamada, reenvío del token y del `x-correlation-id`, y reintento **solo de GET** (repetir un POST podría duplicar una reserva).
+- **Traducción de errores**: un 4xx del servicio (409 sin mesas, 404, 400...) llega igual al usuario; un 5xx es **502**, un timeout **504** y un servicio inaccesible **503**. Los mensajes no revelan direcciones internas.
+- **Validación en dos capas**: el BFF valida el formato y el token primero (si algo es inválido ni siquiera molesta a los servicios); los permisos por rol y por recurso los sigue decidiendo cada servicio.
+- **Enriquecimiento por lote**: el nombre del restaurante y el estado del pago de una lista de reservas salen de **un** pedido a cada servicio (`GET /restaurants?ids=…` y `GET /payments?reservationIds=…`, hasta 50 ids), no de uno por reserva. Antes, una página de 50 reservas con seña eran 50 llamadas a payments-service; ver «El N+1 de Mis reservas».
+- **`x-correlation-id`**: se genera (o se respeta el del cliente si es válido), se devuelve en la respuesta y se reenvía a los servicios. La Fase 5 lo usa para los logs.
+- **CORS solo en el BFF**: es el único servicio que llama el navegador (`CORS_ORIGIN`).
+- **Límite de intentos en login y registro** (`@nestjs/throttler`, en `src/auth/auth-throttling.ts`). Va en el BFF porque es la entrada y el único que ve la IP del cliente; auth-service ve todo como si viniera del BFF. Ventanas de 15 minutos:
+
+  | Ruta | Clave | Límite | Qué frena |
+  |---|---|---|---|
+  | `POST /auth/login` | IP + email | 10 | Adivinar la contraseña de una cuenta |
+  | `POST /auth/login` | IP | 50 | Probar muchas cuentas desde el mismo lugar |
+  | `POST /auth/register` | IP | 30 | Crear cuentas en masa |
+
+  Pasado el límite responde **429** con el formato de error de siempre (el front muestra el mensaje tal cual) y `Retry-After-<límite>` en segundos; el pedido ni llega a auth-service. La clave de cuenta es IP + email y no el email solo: si no, cualquiera podría bloquearle el login a otra persona escribiendo mal su contraseña desde otro lado.
+- **La IP real detrás de nginx (`TRUST_PROXY`)**: nginx agrega la IP del cliente al final de `X-Forwarded-For`, y con `TRUST_PROXY=1` (ya puesto en el compose) el BFF toma justo esa. Sin esto, todo el tráfico del navegador tendría la IP de nginx: un solo contador para todos, y un atacante bloquearía el login de todo el mundo. Probado: 11 intentos por nginx con un `X-Forwarded-For` inventado distinto en cada uno dan 429 igual. En producción hay un salto más, Caddy, y va `TRUST_PROXY=2` (ver «Producción»).
+- **Headers de seguridad con `helmet`** (en `app.setup.ts`, así los tests usan la misma configuración): `nosniff`, no dejarse meter en iframes de otro sitio, CSP y sin `X-Powered-By: Express` (no le regala a nadie qué framework probar). La CSP es la de helmet, que deja andar el Swagger de `/docs`. Se sacan HSTS y `upgrade-insecure-requests` porque suponen HTTPS: el segundo, además, rompe el Swagger abierto por IP (`http://192.168…:3000/docs` pediría sus archivos por https). Los servicios internos no lo tienen: en un deploy no se publican.
+
+### Limitaciones conocidas
+
+- Los contadores de intentos viven en la memoria del BFF: se reinician al reiniciarlo (`docker compose restart web-bff`, útil si corrés el e2e muchas veces seguidas) y con varias instancias cada una contaría por su lado; ahí habría que pasarlos a Redis. En el compose de desarrollo el puerto 3000 del BFF está publicado: pegándole directo (sin nginx) se puede inventar el `X-Forwarded-For` y saltear el límite por IP, y auth-service (3001) también se puede llamar directo. En producción solo se publica Caddy.
+- Sin caché propio: `/reservations/mine` consulta restaurants-service en cada llamada (desde la Fase 8 ese servicio responde desde Redis; ver «Fase 8»).
+- Del dueño están las reservas del local, la gestión del restaurante (mesas y horarios) y su carta (ver «Panel del dueño»).
+- Los DTOs de entrada están duplicados respecto de cada servicio; si cambian allá hay que actualizarlos acá.
+
+## Fase 6: mensajería y pagos
+
+Al reservar con seña, **reservas** y **pagos** se coordinan solo con eventos por RabbitMQ (coreografía, sin que ninguno llame al otro por HTTP):
+
+```
+ cliente ──POST /reservations──▶ reservations ──reservation.created──▶ payments
+                                 (PENDING_PAYMENT,                      (crea el pago PENDING)
+                                  mesa retenida 15 min)
+ cliente ──POST /reservations/:id/pay (Idempotency-Key)──▶ BFF ──▶ payments ──▶ pasarela
+                                                                       │
+        ┌────────────────── payment.succeeded ◀────────────────────────┤  aprobado
+        ▼                                                              │
+ reservations: CONFIRMED                                               │  rechazado ──payment.failed──▶ reservations: CANCELLED (mesa libre)
+                                                                       │
+ plazo vencido ─ reservations: EXPIRED ──reservation.expired──▶ payments: pago EXPIRED
+ cancelación ───reservation.cancelled {refundable}────────────▶ payments: anula, o DEVUELVE la seña si corresponde
+ pago que llega tarde ──reservation.refund_requested──────────▶ payments: devuelve (compensación)
+```
+
+### Cómo probarlo a mano
+
+Con `npm run up` (la seña por defecto es $2.000 por persona), en el Swagger del **BFF** (http://localhost:3000/docs):
+
+1. `POST /reservations` → vuelve `PENDING_PAYMENT` con `depositCents` y `expiresAt` (la mesa queda retenida hasta ese momento).
+2. `POST /reservations/{id}/pay` con un header `Idempotency-Key` (cualquier UUID) y uno de los **tokens de prueba** de la pasarela simulada:
+
+| Token | Qué pasa |
+|---|---|
+| `tok_approved` | Aprobado al instante → la reserva pasa a `CONFIRMED` |
+| `tok_declined` / `tok_insufficient_funds` | Rechazado → la reserva se cancela y la mesa se libera |
+| `tok_error` | La pasarela "se cae": 502, no se cobró nada, se puede reintentar con la misma clave |
+| `tok_slow` | Responde **202** (`PROCESSING`) y a los 3 s la pasarela avisa **por webhook firmado** → `CONFIRMED` |
+| `tok_slow_declined` | Ídem, pero el webhook dice rechazado |
+| `tok_slow_duplicate` | El webhook llega **dos veces**: se aplica una sola |
+
+3. Repetí el mismo pedido con la misma `Idempotency-Key`: devuelve lo mismo (header `Idempotent-Replayed: true`) sin cobrar de nuevo. Con otra clave: 409 (ya está pagado).
+4. Probá **no pagar**: pasados `PAYMENT_WINDOW_MINUTES` la reserva queda `EXPIRED` y el pago también.
+5. Cancelá una reserva pagada: si faltan más de `REFUND_CUTOFF_HOURS` el pago pasa a `REFUNDED`; si no, la seña se pierde (si cancela el dueño del restaurante, siempre se devuelve).
+6. Mirá los mensajes en el panel de RabbitMQ (http://localhost:15672) y el recorrido completo en Grafana buscando el `correlationId` de la reserva.
+
+### Mensajería confiable (`src/messaging`, igual en reservations y payments)
+
+| Problema | Solución |
+|---|---|
+| Guardar en la base y publicar en RabbitMQ no pueden ser una sola transacción: un corte entre los dos pierde el evento o avisa de algo que no pasó | **Transactional outbox**: el evento se guarda como una fila en la **misma transacción** que el cambio de negocio; un *relay* lo publica después y reintenta con espera creciente hasta que RabbitMQ **confirma** (publisher confirms) |
+| Varias instancias del servicio publicarían lo mismo dos veces | El relay toma lotes con `FOR UPDATE SKIP LOCKED`: cada instancia agarra filas distintas y nunca espera a otra |
+| La entrega es "al menos una vez": un mensaje puede llegar repetido | **Consumidor idempotente**: se inserta `(consumidor, id del mensaje)` en `processed_messages` en la **misma transacción** que el efecto; si ya estaba, es un duplicado y solo se confirma |
+| El handler falla (error transitorio) | Va a `<cola>.retry`, que lo devuelve a la cola de trabajo pasado un tiempo (TTL + dead-letter). Hasta `maxAttempts` intentos |
+| El mensaje es basura, o el error nunca se va a arreglar solo | Directo a `<cola>.dlq` con el motivo (`x-error`) y los intentos, para inspeccionarlo y reprocesarlo a mano |
+| Se cae RabbitMQ | El servicio sigue andando y los eventos esperan en el outbox; la conexión se reintenta sola y los consumidores se vuelven a armar |
+| Seguir una saga entre servicios | El `correlationId` viaja en el sobre del evento y en el header del mensaje; el consumidor lo restaura antes de correr el handler |
+
+Sobre de todos los eventos: `{ id, type, occurredAt, correlationId, data }` (el `type` es la routing key del exchange `reservas.events`, de tipo *topic*). Los contratos están en `reservation-events.ts` (reservations) y `events/payment-events.ts` (payments).
+
+### payments-service
+
+| Método | Ruta | Quién | Descripción |
+|---|---|---|---|
+| GET | `/payments/by-reservation/:reservationId` | quien reservó | Pago de una reserva |
+| GET | `/payments/:id` | quien reservó | Detalle |
+| POST | `/payments/:id/pay` | quien reservó | Cobra la seña. **`Idempotency-Key` obligatorio**. 200 (resuelto) o 202 (la pasarela avisará por webhook) |
+| POST | `/webhooks/gateway` | la pasarela (firma HMAC, sin JWT) | Resultado de cobros asíncronos |
+| GET | `/health` | público | Base y RabbitMQ |
+
+Estados del pago: `PENDING → PROCESSING → SUCCEEDED → REFUNDED`, o `FAILED`, `EXPIRED`, `CANCELLED`.
+
+### Decisiones de diseño
+
+- **Idempotency-Key en la misma transacción que el cobro.** Si dos pedidos con la misma clave llegan a la vez, el segundo `INSERT` espera (lo serializa PostgreSQL) y después recibe la respuesta guardada: un solo cobro, sin estado "en proceso" ni locks propios. Si el proceso muere a mitad, todo se revierte y la clave queda libre. La misma clave con otro pedido → 422. Los errores 4xx se guardan y se repiten; los 5xx no (para poder reintentar). Además la pasarela recibe una clave estable por pago (`pay-<id>`): aunque algo falle entre el cobro y el guardado, reintentar no cobra dos veces.
+- **Un pago se cobra bajo un lock de su fila** (`SELECT … FOR UPDATE`): dos intentos simultáneos con claves distintas se ejecutan en fila y el segundo recibe 409.
+- **Pasarela detrás de una interfaz (`PaymentGateway`)**: `createCharge`, `parseWebhook` (verifica firma) y `refund`. Hoy hay una **pasarela simulada** con tokens de prueba y webhooks reales firmados. Como aprueba cualquier pago de prueba, con `NODE_ENV=production` el servicio **no arranca** con ella salvo que se ponga `ALLOW_SIMULATED_GATEWAY=true` (el `.env.example` lo trae en `true` para desarrollo y e2e). Para sumar **Mercado Pago** (o Stripe): escribir un `MercadoPagoGateway implements PaymentGateway`, agregar su rama en `gateway/gateway.module.ts` y poner `PAYMENT_PROVIDER=mercadopago` con sus credenciales. El resto del servicio no cambia. (Los tokens `tok_*` se reemplazan por el token que genera el SDK del navegador.)
+- **Webhooks**: firma HMAC-SHA256 con timestamp (`t=…,v1=…`), comparación en tiempo constante y tolerancia de 5 min contra repeticiones; se verifica sobre el **cuerpo crudo** (`rawBody`). Cada evento se deduplica por su id. Si el cobro todavía no existe (llegó antes de confirmarse el pedido), responde 404 y revierte, así la pasarela reintenta.
+- **Compensaciones**: pago rechazado → la reserva se cancela y la mesa vuelve a estar libre. Pago aprobado que llega cuando la reserva ya venció o se canceló → `reservation.refund_requested` → reembolso. Cancelación → reservations decide `refundable` (política de 24 h) y payments solo ejecuta.
+- **Mensajes desordenados**: si llega un evento sobre un pago que todavía no existe, se reintenta con demora (no es "veneno"): da tiempo a que llegue `reservation.created`.
+- **Vencimiento**: un `UPDATE … RETURNING` cada `EXPIRATION_CHECK_MS`; con varias instancias, cada reserva vence una sola vez.
+- **Reservas con pago en proceso (`PROCESSING`)** no se tocan al cancelarse o vencer: manda el resultado del webhook (y si se aprobó, se devuelve).
+
+### Limitaciones conocidas
+
+- **No hay conciliación**: si la pasarela cobra y nunca avisa (webhook perdido sin reintentos), el pago queda `PROCESSING`. Una pasarela real ofrece consultar el cobro; falta un proceso que lo haga periódicamente.
+- Una **DLQ** no tiene todavía quien la reprocese ni alarma: hoy se mira en el panel de RabbitMQ.
+- La pasarela simulada guarda su idempotencia en memoria (se pierde al reiniciar); una real la guarda ella.
+- El código de mensajería está **copiado** en reservations y payments (y los tests también): es candidato a paquete compartido, igual que seguridad y observabilidad.
+- El orden de los eventos no está garantizado (por los reintentos): los consumidores están escritos para tolerarlo.
+- `notifications-service` (avisar al cliente por mail/push al confirmarse) queda para después: los eventos ya están publicados.
+
+## Fase 7: frontend (`apps/web`)
+
+React 19 + TypeScript + Vite + Tailwind CSS 4. Habla **solo con el BFF**, a través de `/api` (Vite en desarrollo y nginx en la imagen reenvían `/api/*` al BFF; así el navegador usa un único origen y no hace falta CORS).
+
+```bash
+npm run dev:web        # http://localhost:5173 (necesita el BFF y el resto andando)
+npm test -w web        # 40 tests (Vitest + Testing Library)
+npm run build -w web   # tsc + vite build
+```
+
+Con `npm run up` el frontend también se levanta en http://localhost:5173 (contenedor `web`, nginx).
+
+**Para ver algo hace falta un restaurante cargado.** Seguí los pasos 1 y 2 de «Probar el flujo completo» (dueño + restaurante con horarios y mesas, y algún plato en la carta) y después entrá al frontend como cliente.
+
+### Pantallas
+
+| Ruta | Qué hace |
+|---|---|
+| `/` | Busca restaurantes por nombre y cocina (la búsqueda y la página viven en la URL) |
+| `/restaurantes/:id` | Datos, **horarios libres** según personas y día, carta y botón para reservar |
+| `/ingresar` | Login y registro (vuelve a donde se quería ir) |
+| `/reservas/:id/pagar` | Paga la seña con los medios de prueba de la pasarela simulada; muestra el tiempo que queda de mesa retenida |
+| `/reservas` | Mis reservas con filtro por estado, pago de la seña y cancelación con confirmación |
+| `/panel` | **Dueño**: reservas del local por día y estado, «Asistió» / «No vino» y cancelar (ver «Panel del dueño») |
+| `/panel/restaurantes/nuevo`, `/panel/restaurantes/:id` | **Dueño**: crear / editar / eliminar un restaurante con sus mesas y horarios |
+| `/panel/restaurantes/:id/carta` | **Dueño**: agregar, editar, pausar y quitar platos (precio, alérgenos, variantes) |
+
+### Dónde vive cada tipo de estado (y por qué)
+
+| Herramienta | Qué guarda | Por qué ahí |
+|---|---|---|
+| **React Query** (`src/api/hooks.ts`) | Todo lo que viene del servidor: restaurantes, horarios libres, reservas, pagos | Caché, "cargando/error", reintentos y refresco al volver a la pestaña vienen resueltos. Las claves están en un solo lugar para invalidar con precisión (al cancelar se refrescan las reservas y los horarios libres, no los restaurantes) |
+| **Context** (`src/auth/AuthContext.tsx`) | La sesión (usuario y token) | Casi cualquier componente la lee y cambia muy poco (login/logout) |
+| **Redux Toolkit** (`src/store`) | El **borrador de la reserva** (personas, día, horario elegido, notas) y los avisos (toasts) | El borrador es estado del cliente que tiene que sobrevivir a la navegación: elegís un horario sin sesión, vas a ingresar, volvés y sigue elegido |
+| **Estado local** (`useState`) | Cosas de una sola pantalla: qué medio de pago está marcado, si se está confirmando una cancelación | No hace falta compartirlo |
+| **URL** (`useSearchParams`) | Búsqueda, filtros y página | Se puede compartir, recargar y volver con "atrás" |
+
+### Decisiones que vale la pena mirar
+
+- **El pago es el lugar donde un frontend ingenuo cobra dos veces.** La clave `Idempotency-Key` se genera por intento de pago y se **conserva** si el pedido falla por red o por la pasarela (reintentar es seguro: el servidor devuelve lo mismo); solo cambia si se cambia el medio de pago, porque el backend rechaza la misma clave con otro contenido. Los `POST` nunca se reintentan solos (`mutations.retry: false`). Hay tests para las dos reglas.
+- **La confirmación es asíncrona** (llega por evento de RabbitMQ), así que justo después de pagar la reserva puede seguir en `PENDING_PAYMENT` unos instantes. La pantalla de pago consulta cada 2 s mientras el resultado todavía puede cambiar (`PROCESSING`, o pago ya resuelto con reserva todavía sin actualizar) y no deja pagar de nuevo mientras tanto.
+- **Si alguien se llevó el horario antes que vos** (409), se deselecciona el horario, se muestra el motivo y se piden de nuevo los libres.
+- **Los errores se muestran, no se esconden**: el cliente de la API (`src/lib/api.ts`) convierte cualquier falla en un `ApiError` con un mensaje legible (los 5xx nunca muestran detalles técnicos) y el código de seguimiento (`x-correlation-id`) para buscar el pedido en Grafana. Un 401 con sesión cierra la sesión y limpia la caché (no se ve nada del usuario anterior).
+- **Fechas y montos**: los horarios se muestran en la zona del restaurante (no la del navegador) y el dinero viaja en centavos.
+- **Accesibilidad básica**: etiquetas en todos los campos, foco visible, regiones `aria-live` para los resultados, respeta `prefers-reduced-motion`, botones de al menos 44 px.
+- **Diseño**: la reserva se muestra como una *comanda* (el ticket del mozo, con su borde perforado); es el único adorno de la app.
+- **Headers de seguridad en nginx** (`apps/web/security-headers.conf`). La CSP es estricta y sin `'unsafe-inline'`: la app solo carga lo propio (las fuentes vienen en el bundle con fontsource, el favicon es un `data:` y el navegador solo habla con `/api`). Si alguien lograra inyectar un script (XSS), no corre, y aunque corriera no podría mandar datos a otro dominio (`connect-src 'self'`). Además: no dejarse meter en un iframe (`frame-ancestors 'none'`, contra *clickjacking*), `nosniff`, `Referrer-Policy`, `Permissions-Policy` (sin cámara, micrófono ni ubicación), `Cross-Origin-Opener-Policy`, y nginx ya no dice su versión.
+  - **Una trampa de nginx**: un `add_header` dentro de un `location` *anula* todos los del `server`. Como `/` y `/assets/` tienen su propio `Cache-Control`, los headers puestos a nivel `server` no salían en ninguno; por eso van en un archivo que se incluye en cada `location`.
+  - **Cómo se probó**: recorriendo la app en Chromium a través de nginx sin un solo aviso en la consola (fuentes y datos cargan), e inyectando a mano un `<script>` inline y un `fetch` a otro dominio: la CSP bloqueó los dos.
+
+### Responsive
+
+Se diseñó de móvil hacia arriba: sin prefijo es una columna, y `sm:`, `md:` y `lg:` suman columnas. Se revisó pantalla por pantalla con capturas a 320, 375 y 768 px, midiendo además que la página nunca tenga scroll horizontal. Lo que se corrigió y por qué:
+
+- **Header**: en móvil bajaba a tres filas. Ahora el logo y la sesión van arriba y la navegación abajo, en su propia fila (si no entra, se desliza de costado). El nombre largo se corta con `…`.
+- **Grilla del `Layout`**: la columna era `auto` y se ensanchaba hasta el ancho de los links en una sola línea, lo que desbordaba la página a 320 px. Se fijó con `minmax(0, 1fr)`: es el clásico problema de que un hijo de una grilla nunca se achica por debajo de su contenido.
+- **Resumen del día**: con 7 tarjetas en 2 columnas quedaba una huérfana. "Todas" ocupa el ancho completo y las otras seis forman filas parejas (2 columnas en móvil, 3 en tablet, 7 en escritorio).
+- **Formulario del restaurante**: cada mesa y cada turno son una tarjeta con campos en dos columnas (en escritorio siguen en una línea). Antes eran 4 controles apilados en zigzag por turno.
+- **Fila de reserva del panel**: la hora y el nombre van lado a lado en vez de una arriba de la otra.
+
+Limitación: a 320 px (celulares muy chicos) el último link de la navegación queda apenas cortado y hay que deslizar. No hay un test automático de responsive: jsdom no calcula layout, así que se verificó con un navegador real.
+
+### Limitaciones conocidas
+
+- **El panel del dueño cubre reservas, restaurante y carta** (ver «Panel del dueño»); incluye el resumen del día.
+- El **token se guarda en `localStorage`**: sobrevive al F5 pero un script malicioso (XSS) podría leerlo. La CSP lo hace mucho más difícil (un script inyectado no corre ni puede mandar el token afuera), pero lo más seguro sería que el BFF lo entregue en una cookie `httpOnly`.
+- **HSTS** (`Strict-Transport-Security`) no está en nginx: obliga a usar HTTPS y por HTTP el navegador lo ignora. Lo pone Caddy, el que termina el TLS (ver «Producción»). `upgrade-insecure-requests` no hace falta: todo es del mismo origen, y HSTS ya obliga a HTTPS.
+- Los **tests** cubren la lógica y las pantallas con un servidor falso (`fetch` simulado); no hay todavía pruebas con un navegador real contra el stack (lo recorrí a mano con Playwright, pero ese script no está en el repo).
+- Solo tema claro; sin traducciones (todo en español rioplatense).
+
+## Panel del dueño (`/panel`)
+
+El dueño de un restaurante ve las reservas de su local, marca si el cliente fue, puede cancelar y **crea, edita y elimina sus restaurantes** (datos, mesas y horarios) **administra su carta** y ve un **resumen del día**. Alcance deliberadamente acotado: el resumen cuenta reservas por estado (no comensales, ocupación por hora ni señas).
+
+| Pieza | Qué se agregó |
+|---|---|
+| auth-service | El JWT ahora lleva `name` |
+| reservations-service | Columna `customer_name` (nullable), copiada del token al reservar y devuelta en la API |
+| restaurants-service | `GET /restaurants/mine` (rol `RESTAURANT_OWNER`, sin caché, ordenado por nombre) |
+| web-bff | Módulo `owner`: `GET /owner/restaurants`, `GET /owner/restaurants/:id/reservations`, `PATCH /owner/reservations/:id/status` |
+| web-bff (carta) | `GET /owner/restaurants/:id/menu` (con los pausados), `POST` y `PATCH`/`DELETE …/menu-items/:itemId` |
+| web-bff (gestión) | `POST /owner/restaurants`, `PATCH` y `DELETE /owner/restaurants/:id`: validan la forma del cuerpo (mismas reglas que el servicio) y reenvían |
+| apps/web | `/panel` (con `RequireOwner`), link «Panel del local» solo para dueños, y el formulario de restaurante en `/panel/restaurantes/nuevo` y `/panel/restaurantes/:id` |
+
+### Qué se puede hacer según el momento de la reserva
+
+| Estado | Todavía no empezó | Ya empezó |
+|---|---|---|
+| `CONFIRMED` | **Cancelar** (se devuelve la seña) | **Asistió** / **No vino** |
+| `PENDING_PAYMENT` | solo se ve (el cliente todavía puede pagar) | — |
+| Resto | solo se ve | solo se ve |
+
+Esas reglas las impone reservations-service (`cancel` falla si ya comenzó; `status` falla si todavía no); la pantalla solo ofrece el botón que va a funcionar.
+
+### Decisiones que vale la pena mirar
+
+- **El nombre del cliente viaja en el JWT y se guarda en la reserva** (en vez de que el servicio de reservas le pregunte a auth-service). Evita una dependencia nueva entre servicios y una llamada por listado. Se guarda **solo el nombre**: sin email ni teléfono, para exponer lo mínimo al dueño.
+- **El nombre es una copia**: si el cliente cambia su nombre después, la reserva conserva el de ese momento (es lo que el local vio al reservar). Hoy no hay forma de cambiarlo, así que no es un caso real todavía.
+- **Tokens viejos y reservas viejas**: un token emitido antes del cambio no trae `name` (el campo es opcional en los servicios) y esa reserva queda con `customer_name = NULL`; el panel muestra «Cliente». Con volver a iniciar sesión alcanza. Las reservas anteriores no se completan solas.
+- **El BFF no duplica permisos**: reenvía y deja que cada servicio decida (restaurants-service para «mis restaurantes», reservations-service para las reservas de *ese* local). Un cliente o un dueño ajeno recibe el 403/404 del servicio. `RequireOwner` en el front solo evita mostrar una pantalla que iba a fallar; no es seguridad.
+- **`/restaurants/mine` va antes que `/restaurants/:id`** en el controlador; si no, Nest interpretaría «mine» como un id.
+- **Cancelar reutiliza `POST /reservations/:id/cancel`**: ese endpoint ya aceptaba al dueño, y el evento ya marca `CANCELLED_BY_OWNER` con devolución de la seña.
+
+### Gestión del restaurante: decisiones
+
+- **Los cambios sobre mesas y horarios no revalidan las reservas existentes.** Es el comportamiento del backend; el formulario lo avisa en pantalla al editar. Bloquear el cambio si hay reservas futuras afectadas exigiría que restaurants-service consulte a reservations-service (una dependencia nueva entre servicios) y quedó fuera.
+- **Eliminar no cancela las reservas.** Se borra el restaurante y su carta; las reservas quedan apuntando a un restaurante que ya no existe. La confirmación lo dice y pide cancelar antes las vigentes desde el panel.
+- **Validación en tres capas**: el formulario avisa al instante (`lib/restaurantForm.ts`, mismas reglas que el servidor), el BFF rechaza la forma inválida sin molestar al servicio, y restaurants-service decide lo que depende de los datos (mesas repetidas, quién es el dueño).
+- **Todo el formulario es texto hasta enviarlo**: los campos numéricos se convierten recién al enviar, así que se puede borrar y reescribir un número sin que salte a `0`.
+- **Mutaciones que refrescan lo correcto**: tras crear, editar o eliminar se invalidan mi lista, el listado público y el detalle, y en el servidor el caché de Redis se invalida solo (Fase 8).
+- El teléfono vacío **no se envía** (el servidor lo rechaza por formato), así que una vez cargado no se puede dejar en blanco desde la pantalla.
+
+### El resumen del día: decisiones
+
+- **Siete tarjetas que también son filtros**: el total del día y un número por estado (confirmadas, por pagar, asistieron, no vinieron, canceladas, vencidas). Tocar una filtra la lista de abajo, así que el resumen y el listado son una sola pantalla y no hay que aprender dos controles. Reemplaza a los botones de filtro de antes.
+- **El conteo se hace en la base, no en el navegador ni en el BFF**: `GET /reservations/restaurant/:id/summary?date=` ejecuta un `GROUP BY status` en Postgres. La lista está paginada (máximo 50 por página), así que sumarla desde afuera se cortaría con un día grande; la consulta agregada cuesta lo mismo con 10 reservas que con 1.000.
+- **Mismo «día» que el listado**: es el día calendario en la zona horaria del restaurante (medianoche de Buenos Aires, no de UTC). Los dos endpoints comparten la función que calcula el rango, para que no puedan diferir; el e2e verifica que cada número coincide con el total del listado filtrado por ese estado.
+- **Los seis estados siempre están, en 0 si no hay**: la pantalla no tiene que adivinar cuáles faltan. `COUNT` llega de Postgres como texto (es un `bigint`) y se convierte en el servicio.
+- **Mismos permisos que el listado**: solo el dueño de ese restaurante (si no, 404). La fecha es obligatoria.
+- **Si el resumen falla, la pantalla sigue siendo útil**: la lista y los filtros funcionan igual y los números se muestran como «–». Los números se actualizan solos al marcar una reserva, cancelarla o volver a la pestaña.
+
+### La carta: decisiones
+
+- **Los precios se escriben en pesos y viajan en centavos enteros.** El formulario acepta coma o punto (`4500,50`) y convierte con redondeo (`19,99` × 100 da `1998,999…` en coma flotante; se redondea a `1999`). Un monto inválido o con más de dos decimales se rechaza antes de enviarlo (`lib/menuForm.ts`). Editar un plato y guardarlo sin tocar nada **no cambia** su precio (hay un test).
+- **Pausar no es borrar**: un plato pausado (`available: false`) desaparece de la carta pública pero el dueño lo sigue viendo, marcado, y lo reactiva con un clic. Mandar solo `available` evita pisar el resto de los datos.
+- **Alérgenos como casillas** (los 14 códigos del servidor, mostrados en español) y **variantes** con diferencia de precio, que puede ser negativa.
+- **Categorías libres con sugerencias**: se escribe la categoría y se sugieren las que ya existen (`datalist`), así no aparece «Postres» y «postres» por un descuido.
+- **El caché no sirve cartas viejas**: cada cambio invalida la carta de Redis (Fase 8) y el front refresca la del dueño y el detalle público. El e2e lo comprueba: se pausa un plato y desaparece de la carta pública al instante.
+- **Arreglo de paso**: `formatMoney` redondeaba a pesos enteros, así que un plato de `$ 4.500,50` se mostraba como `$ 4.501`. Ahora muestra los centavos solo si existen (`$ 4.500` o `$ 4.500,50`). Afecta también la carta pública y las señas.
+
+### Cómo se probó
+
+- Tests unitarios y HTTP en los cuatro servicios, 8 tests de pantalla (`OwnerPage.spec.tsx`: acceso por rol, filtros, marcar asistencia, cancelar con confirmación, error del servidor, paginación).
+- La integración de reservations-service (Postgres y RabbitMQ reales) verifica que `customerName` se guarda desde el token.
+- La prueba de punta a punta tiene dos secciones nuevas: «8. Panel del dueño» (lista, nombre del cliente, filtro por día, dueño ajeno, marcar antes de hora, cancelar) y «9. Gestión de restaurantes» (crear, editar, ver el cambio al instante pese al caché, dueño ajeno, eliminar).
+- 19 tests más de pantalla y de reglas del formulario de restaurante (alta, errores, mesas repetidas, edición, baja con confirmación) y 18 de la carta (conversión de precios, validación, alta, edición, pausa, baja y errores).
+- El resumen: 5 tests unitarios y 4 HTTP en reservations-service, 3 de integración con Postgres real (la consulta agregada y el día en la zona del restaurante), 2 en el BFF y 4 de pantalla. El e2e suma «11. Resumen del día».
+- La prueba de punta a punta suma «10. Carta del dueño»: alta, validación (alérgeno inventado, precio con decimales), dueño ajeno, pausa y reactivación con la carta pública al día, baja.
+- Recorrido en un navegador real con Playwright contra el stack (con un restaurants-service simulado, sin MongoDB real): sin errores de consola.
+
+### Limitaciones conocidas
+
+- **El endpoint público de la carta acepta `?includeUnavailable=true` sin autenticación** (así lo definió restaurants-service), por lo que quien conozca el parámetro puede ver los platos pausados. No son datos sensibles, pero conviene restringirlo si se pausan por un motivo interno.
+- La carta no tiene **orden manual**: se ordena por categoría y nombre. Tampoco hay fotos de los platos.
+- El selector de restaurante aparece solo si hay más de uno; con dos locales de igual nombre no se distinguen.
+- No hay filtros por rango de fechas ni por nombre del cliente; el listado y el resumen son por **un día**.
+- El resumen **cuenta reservas, no comensales**: no suma las personas de cada reserva, ni muestra ocupación por franja horaria ni el monto de las señas. Sería sumar columnas a la misma consulta agregada.
+- Las reservas de varios locales no se juntan en una sola vista.
+- El panel no se actualiza solo: refresca al volver a la pestaña o al tocar una acción.
+
+## Fase 8: performance (Redis, k6, Lighthouse)
+
+La regla de esta fase: **no se optimiza nada sin medir antes y después**. Se midió el front con Lighthouse y el backend con k6 (resultados abajo; el kit para repetirlo está en `perf/README.md`).
+
+### Caché de lecturas con Redis (`restaurants-service/src/cache`)
+
+Los datos que más se piden (listado, detalle de un restaurante, carta) cambian poco: cada pedido iguala a los anteriores y MongoDB repite el mismo trabajo. Se aplicó el patrón **cache-aside**: se mira Redis; si está (*hit*) se responde desde ahí; si no (*miss*) se consulta MongoDB, se guarda con vencimiento y se responde.
+
+| Pedido | ¿Se cachea? | Por qué |
+|---|---|---|
+| `GET /restaurants` (sin `search`) | Sí, por página y filtro de cocina | Es la portada: se repite todo el tiempo |
+| `GET /restaurants?search=...` | **No** | El texto lo escribe cada usuario: hay infinitas combinaciones y casi no se repiten; llenarían Redis de claves inútiles |
+| `GET /restaurants/:id` | Sí | Lo usan el BFF y reservations-service en cada reserva |
+| `GET /restaurants/:id/menu` | Sí (con y sin platos no disponibles, por separado) | Es la parte más pesada de la pantalla de un restaurante |
+| Disponibilidad de mesas (reservations-service) | **No** | Cambia con cada reserva: un dato viejo permitiría ofrecer una mesa ocupada |
+
+### Decisiones que vale la pena mirar
+
+- **Invalidación por versión.** Todas las claves llevan un número de versión (`restaurants:v7:...`). Cuando alguien crea, modifica o borra un restaurante o un plato, se incrementa ese número y las claves anteriores quedan fuera de alcance (se limpian solas por vencimiento). Es más simple que buscar y borrar claves una por una, y además evita una carrera: una lectura lenta que empezó antes de la escritura guarda su dato viejo bajo la versión vieja, que ya nadie consulta.
+- **Se invalida después de escribir, no antes**, y solo si la escritura tuvo éxito (un 403 o un 404 no invalidan).
+- **Redis es una optimización, no una dependencia.** Si se cae o tarda, el pedido se resuelve desde MongoDB (tiempos cortos y sin cola de espera). Si falta `REDIS_URL`, el servicio anda igual que antes de la fase. Esto además permite medir "sin caché" con el mismo código.
+- **Una sola consulta por clave** (*single-flight*): si llegan 100 pedidos juntos por algo que no está en el caché, solo uno va a MongoDB y los otros esperan ese resultado. Evita la «estampida» cuando vence una clave popular.
+- **Los errores no se cachean** (un 404 de hoy no puede ser un 404 de mañana).
+- **Vencimiento de 60 s** (`CACHE_TTL_SECONDS`): red de seguridad por si alguna escritura se hiciera sin pasar por el servicio.
+- Redis en Docker: sin persistencia, 64 MB como máximo y `volatile-lru` (si se llena, descarta solo claves con vencimiento, las menos usadas; la clave de versión no vence, así que nunca se descarta).
+
+### Cómo se probó
+
+- 14 tests unitarios del caché (aciertos, vencimiento, invalidación, la carrera descrita arriba, 100 pedidos simultáneos, Redis caído, valor corrupto) y tests de que cada servicio cachea lo que debe e invalida cuando debe.
+- 15 tests de integración contra un **Redis real** (`npm run test:integration -w restaurants-service`, también en el CI), incluyendo uno de punta a punta por HTTP que cuenta cuántas veces se consulta la base. Verifiqué que las pruebas fallan si se rompe la invalidación, la versión o la deduplicación.
+- En la prueba de punta a punta (`npm run test:e2e`) hay una sección nueva: después de agregar un plato o renombrar el restaurante, el BFF tiene que mostrar el dato nuevo enseguida.
+
+### Resultados del front (Lighthouse, móvil simulado, mediana de 5 corridas)
+
+Medido en mi entorno con la app construida y servida por nginx con la misma configuración de la imagen. Los valores absolutos dependen de la máquina; lo que importa es la diferencia.
+
+| | Listado antes | Listado después | Detalle antes | Detalle después |
+|---|---:|---:|---:|---:|
+| Performance (0-100) | 85 | **98** | 90 | **98** |
+| First Contentful Paint | 3,2 s | **1,9 s** | 2,8 s | **1,6 s** |
+| Largest Contentful Paint | 3,4 s | **1,9 s** | 3,0 s | **2,1 s** |
+| Datos transferidos | 441 KB | **189 KB** | 441 KB | **189 KB** |
+| SEO | 82 | **100** | 82 | **100** |
+| Accesibilidad / Buenas prácticas | 100 / 100 | 100 / 100 | 100 / 100 | 100 / 100 |
+
+Qué lo causó, en orden de impacto (cada cambio se midió por separado):
+
+1. **Compresión gzip en nginx** (seis directivas en `apps/web/nginx.conf`): Performance 85 → 99 y FCP 3,2 → 1,7 s. El JS y el CSS son texto y se achican ~70 %; sin compresión el navegador bajaba los 354 KB del bundle completos.
+2. **`robots.txt` y `meta description`**: SEO 82 → 100. Sin `robots.txt`, nginx devolvía `index.html` (el comodín de la app de una sola página) y los buscadores lo leían como reglas inválidas.
+3. **Probado y descartado: dividir el código por rutas** (`React.lazy`). Ahorraba unos 5 KB comprimidos en la carga inicial y no se notó en las medidas: las pantallas pesan muy poco, el grueso del bundle son las librerías (React). No justificaba la complejidad extra (más pedidos, estados de carga, tests más complicados).
+
+### Resultados del backend (k6)
+
+Medido en una PC con Windows y Docker Desktop, con **todo en la misma máquina** (servicios, bases, Redis y el propio k6), 150 restaurantes con 30 platos cada uno y una corrida por caso (10 s de calentamiento + 30 s medidos). El tráfico simula gente navegando: 45 % listados, 45 % pantalla de un restaurante, 10 % búsquedas por texto.
+
+**1. Capacidad: 100 pedidos por segundo.** Sin caché el sistema se satura; con caché aguanta.
+
+| | Sin caché | Con caché |
+|---|---:|---:|
+| Pedidos fallidos | 7,8 % | **0 %** |
+| Mediana (p50) de todos los pedidos | 496 ms | **6,9 ms** |
+| p95 de todos los pedidos | 6.138 ms | **28 ms** |
+| Pedidos que k6 no llegó a iniciar | 322 | 44 |
+
+Los ~6 s del «antes» coinciden con el BFF esperando 3 s a `restaurants-service` y reintentando una vez: los pedidos fallidos son timeouts por saturación. Con caché la mayoría de las lecturas ni llega a MongoDB, y esa carga que se evita también alivia a las búsquedas (que no usan el caché): por eso en esta tabla la búsqueda también mejora. **A esta carga la búsqueda deja de ser un control limpio.**
+
+**2. Latencia con carga baja: 30 pedidos por segundo** (ninguno de los dos modos se satura, así que la comparación es justa).
+
+| Pedido | p50 antes | p50 después | p95 antes | p95 después | Cambio p95 |
+|---|---:|---:|---:|---:|---:|
+| Listado (cacheado) | 9,0 ms | 5,8 ms | 17,6 ms | 10,0 ms | -43 % |
+| Pantalla de restaurante (cacheado) | 14,4 ms | 7,7 ms | 24,3 ms | 21,3 ms | -12 % |
+| Búsqueda por texto (**no** cacheado, control) | 9,5 ms | 10,0 ms | 19,3 ms | 17,6 ms | -9 % |
+| Todos juntos | 12,2 ms | 7,0 ms | 22,2 ms | 18,4 ms | -17 % |
+
+Cómo leerlo:
+
+- **La mejora de latencia con poca carga es real pero chica**: la mediana del listado y de la pantalla de restaurante baja entre un 35 % y un 47 %, o sea unos 3 a 7 ms. Con pocos datos y MongoDB en la misma máquina, la base ya responde en pocos milisegundos y no hay mucho que ahorrar.
+- **La búsqueda (que no usa caché) casi no se movió** (+5 % en la mediana, -9 % en el p95): esa diferencia es el nivel de ruido de la medición. Por eso las diferencias de p95 de ese tamaño (como el -12 % de la pantalla de restaurante) no se pueden distinguir de la suerte; las medianas sí.
+- **Donde el caché pesa de verdad es en la capacidad**: pasar de 7,8 % de errores y 6 s de espera a 0 % de errores y 28 ms a 100 pedidos por segundo.
+
+**3. Qué dijo Redis** (`keyspace_hits` 13.604, `keyspace_misses` 714). Ojo con este número: cada lectura consulta Redis **dos veces** (primero la versión del caché y después el dato), así que la tasa de aciertos de 95 % que sale de esa cuenta está inflada. Contando solo los datos, es de alrededor de 90 %. Los ~700 fallos son esperables: unas 330 claves distintas (150 detalles, 150 cartas y las páginas del listado) que hubo que cargar al empezar y volver a cargar cuando vencieron a los 60 s.
+
+**Salvedades**: una sola corrida por caso (no se repitió para medir la variación entre corridas en esta máquina); k6 comparte CPU con los servicios, y aun con caché a 100 pedidos por segundo quedaron 44 sin iniciar, así que ese es más o menos el techo de esta PC; el tráfico repite pocas páginas, un mejor caso que el real (con miles de restaurantes la tasa de aciertos sería menor).
+
+### Un bug real que apareció al medir
+
+Al correr Lighthouse sobre la pantalla de un restaurante con carta, la consola del navegador mostró un error: el front esperaba la carta como una lista plana de platos, pero `restaurants-service` la devuelve **agrupada por categoría** (`[{ category, items: [...] }]`). Los tests del front simulaban la forma equivocada y por eso no lo detectaron. Se corrigió el front, se agregó un test con una carta real y una sección en el e2e que verifica la forma de la respuesta del BFF. La lección: los tests que simulan al otro lado solo prueban lo que uno *cree* que devuelve; hace falta al menos una prueba contra el servicio real.
+
+### El N+1 de «Mis reservas» (BFF)
+
+"Mis reservas" pide hasta 50 reservas y el BFF le agrega a cada una el nombre de su restaurante y el estado de su pago. Lo hacía con **un pedido por reserva** a payments-service (en tandas de 10) y uno por restaurante distinto: el clásico problema N+1, pero entre servicios, donde cada llamada es un viaje HTTP con verificación del JWT.
+
+**Cómo se midió.** `perf/seed-reservations.mjs` carga un cliente con 30 reservas pagadas en 3 restaurantes (el peor caso realista de la pantalla) y `perf/my-reservations.k6.js` lo carga con el mismo modelo abierto que la prueba de lectura: 80 % "Mis reservas" (`limit=50`, como el front) y 20 % `/me/overview`. Las llamadas internas se contaron siguiendo un `x-correlation-id` en los logs de cada servicio.
+
+**Qué se cambió.** payments-service suma `GET /payments?reservationIds=…` (una consulta `IN` sobre un índice único, y solo los pagos del usuario del token: lo ajeno no aparece, igual que el 404 de antes) y restaurants-service acepta `?ids=…` en el listado (sin caché, como la búsqueda: las combinaciones de ids no se reusan). El BFF hace un pedido a cada uno.
+
+| | Antes | Después |
+|---|---:|---:|
+| Llamadas internas por cada "Mis reservas" (1 + restaurantes + pagos) | **34** (1 + 3 + 30) | **3** (1 + 1 + 1) |
+| Llamadas internas por `/me/overview` | 5 | 3 |
+
+A **5 pedidos por segundo** (una carga que el sistema de antes aguantaba):
+
+| Pedido | p50 antes | p50 después | p95 antes | p95 después | Cambio p95 |
+|---|---:|---:|---:|---:|---:|
+| Mis reservas (limit=50) | 158 ms | 27 ms | 286 ms | 52 ms | **−82 %** |
+| Inicio del usuario (`/me/overview`) | 30 ms | 29 ms | 51 ms | 39 ms | −23 % |
+
+A **20 pedidos por segundo** el de antes **colapsaba**: atendía 6 por segundo, k6 tuvo que descartar 371 pedidos y el p95 de "Mis reservas" llegó a 44 s (eran 680 llamadas internas por segundo). Después atiende los 20 con un p95 de 38 ms y ningún descarte. Subiendo la carga, el techo pasó de **~6 a ~60 pedidos por segundo** (a 80 se satura atendiendo 64).
+
+**Salvedades**: una corrida por caso en la misma máquina, con k6 compartiendo CPU con los servicios (el ruido entre corridas idénticas acá es de ±20 % en el p95, muy por debajo de estas diferencias); y un solo cliente, así que la base de payments siempre tiene caliente lo mismo.
+
+### Limitaciones conocidas
+
+- **Las mediciones del backend son de una sola máquina y una sola corrida por caso** (ver las salvedades arriba); los números absolutos no se pueden extrapolar a otro entorno. Los de Lighthouse son de un entorno simulado.
+- El caché es invalidación global: cualquier escritura descarta todo. Es correcto y simple porque se edita muy poco comparado con lo que se lee; con un panel de dueños muy activo habría que invalidar por restaurante.
+- La página sigue renderizándose en el navegador (SPA): el contenido aparece después de bajar el JS y pedir los datos. Mejorarlo más exigiría renderizado en el servidor o prerenderizado, que es otro proyecto.
+- No hay caché en el BFF ni en el navegador para las llamadas a la API (por ejemplo, `Cache-Control`/ETag). Es el siguiente paso natural si la medición muestra que hace falta.
+
+## Fase 9: CI/CD (GitHub Actions)
+
+Todo vive en `.github/` y **tiene que estar en la raíz del repositorio** (el repo es la carpeta `reservas-platform`, no una carpeta más arriba).
+
+### `ci.yml`: se corre en cada pull request (y cuando lo llama `release.yml`)
+
+No se dispara con cada `push` a una rama: los commits sueltos no gastan minutos, y lo que cuenta es el estado del pull request. Si hay un PR abierto y subís otro commit, la corrida anterior se cancela (`concurrency`).
+
+| Job | Qué verifica | Detalle |
+|---|---|---|
+| **Lint** | `npm run lint` sobre todo el repo, con cero avisos permitidos | Un solo job (la configuración es única). Corre en paralelo a los demás |
+| **Unitarios** (×7) | Compila (con chequeo de tipos) y corre los tests de `auth`, `restaurants`, `reservations`, `payments`, `notifications`, `web-bff` y `web` | Un job por paquete, en paralelo y con `fail-fast: false`: si uno falla se ve igual el estado de los demás. Usa `npm ci`, que instala exactamente lo del `package-lock.json` |
+| **Integración** (×2 + 1) | `reservations` y `payments` contra **PostgreSQL 16 y RabbitMQ reales**; `notifications` contra RabbitMQ real (job aparte, no usa PostgreSQL) | Los lanza como *service containers* con los puertos y credenciales que esperan los tests |
+| **Integración del caché** | El caché de `restaurants-service` contra un **Redis real** | Prueba la invalidación, que dos instancias compartan el caché y que, si Redis se cae, el servicio siga respondiendo |
+| **Imagen** (×7) | Que cada `Dockerfile` construya | Con caché de capas: si las dependencias no cambiaron no se reinstalan |
+| **Punta a punta** | Levanta **todo** con `docker compose` (bases, RabbitMQ, 6 servicios y el front) y corre la saga de la seña a través del BFF | Es lo único que prueba la red entre contenedores y el proxy de nginx. Si falla, sube los logs de todos los contenedores |
+| **Auditoría** | `npm audit` de las dependencias de producción | **Avisa pero no bloquea**: el paso siempre termina bien, y si hay vulnerabilidades altas deja un aviso amarillo y el detalle en el resumen de la corrida. Se hizo así porque `continue-on-error` igual pinta el commit de rojo. Hoy la auditoría de producción da **0 vulnerabilidades** (ver «Versión de NestJS») |
+
+Los secretos de la corrida punta a punta (`JWT_SECRET`, `GATEWAY_WEBHOOK_SECRET`) se generan al azar en el mismo job y se descartan: no hay que cargar nada en GitHub para que el CI ande.
+
+### `release.yml`: se corre al hacer push a `main` o al crear un tag `vX.Y.Z`
+
+1. Llama al CI completo (`uses: ./.github/workflows/ci.yml`). **Si algo falla, no se publica nada.**
+2. Construye las 6 imágenes y las sube a GitHub Container Registry: `ghcr.io/<usuario>/<repo>/<servicio>`.
+3. Etiquetas: `latest` y `sha-<commit>` en cada push a `main`; además `X.Y.Z` y `X.Y` si hay tag. La etiqueta `sha-…` permite volver a una versión exacta.
+
+Para publicar una versión: `git tag v0.1.0 && git push origin v0.1.0`.
+
+### Decisiones de seguridad
+
+- **Permisos mínimos**: el workflow completo tiene `contents: read`; solo el job `publish` agrega `packages: write`.
+- **Sin secretos propios**: se publica con el `GITHUB_TOKEN` temporal de cada corrida.
+- Las imágenes quedan **ligadas al commit** (etiquetas OCI), y las corridas de `main` y de tags no se cancelan entre sí: cada commit publicado quedó probado.
+- **Dependabot** propone actualizaciones de npm (menores y parches en un solo PR por semana), de las acciones y de las imágenes base; el CI las prueba antes de poder mergearlas.
+
+### Configurar en GitHub (una sola vez)
+
+1. **Settings → Actions → General → Workflow permissions**: dejá «Read repository contents» (los permisos de escritura ya los pide el job que los necesita).
+2. **Settings → Branches → Add rule** sobre `main`: *Require a pull request* y *Require status checks to pass* eligiendo los jobs del CI. Así no entra código que no pasó las pruebas.
+3. Después del primer release, en el perfil → **Packages**, las imágenes aparecen como privadas; se pueden hacer públicas desde la configuración de cada paquete.
+4. Para ver el estado en el README, agregá la insignia (cambiá `USUARIO/REPO`): `![CI](https://github.com/USUARIO/REPO/actions/workflows/ci.yml/badge.svg)`
+
+### Limitaciones conocidas
+
+- **Los workflows ya corrieron en GitHub**: el CI quedó en verde y `release.yml` publicó las 6 imágenes en GHCR. Antes de eso los había validado con *actionlint* y corriendo los mismos comandos en una copia limpia, pero la prueba real fue esa primera corrida.
+- Las versiones de las acciones (`actions/checkout@v4`, `docker/build-push-action@v6`...) son las que conocía; Dependabot las mantiene al día.
+- **No hay etapa de deploy**: se publican imágenes, pero no se despliegan a ningún servidor (todavía no hay un destino definido).
+
+## Notificaciones (`notifications-service`)
+
+Cuando una reserva cambia de estado por algo que el cliente **no hizo él mismo**, le llega un aviso a su bandeja (la campanita del encabezado y la pantalla `/notificaciones`):
+
+| Evento | Aviso al cliente |
+|---|---|
+| `reservation.confirmed` | «Reserva confirmada» (restaurante, personas, fecha y hora) |
+| `reservation.cancelled` por **pago rechazado** | «No se pudo cobrar la seña» |
+| `reservation.cancelled` por **el restaurante** | «El restaurante canceló tu reserva» (y si la seña se devuelve o no) |
+| `reservation.expired` | «Tu reserva venció» |
+| `reservation.cancelled` por el propio cliente | *(nada: lo hizo él)* |
+
+```
+reservations ──(outbox)──▶ RabbitMQ ──reservas.events──▶ notifications ──▶ MongoDB (bandeja)
+                                                              ▲
+ React ──GET /notifications, PATCH /:id/read, POST /read-all──▶ BFF ──▶ ┘   (todo filtrado por el `sub` del JWT)
+```
+
+### Decisiones que vale la pena mirar
+
+- **Los eventos llevan los datos para armar el mensaje** (nombre del restaurante, fecha, personas, zona horaria). Así `notifications` no llama a nadie por HTTP ni depende de que otro servicio esté en pie. El cambio fue **aditivo**: `payments` ignora los campos nuevos.
+- **Idempotencia con un índice único**: RabbitMQ entrega «al menos una vez», así que un evento puede llegar dos veces. El índice único de `eventId` hace que solo cree una notificación; el segundo intento da error `E11000`, que se trata como «ya procesado» y no como falla.
+- **Privacidad**: todo se filtra por el `sub` del JWT. La notificación de otra persona responde 404 (igual que una inexistente), para no revelar que existe.
+- **Se borran solas a los 90 días** (índice TTL de Mongo): una bandeja no es un historial.
+- **La campanita consulta cada 30 s** (polling), solo con sesión y con la pestaña visible. No hay websockets: para un contador alcanza y es mucho más simple.
+- **Si `notifications` se cae**, las reservas siguen andando: los eventos esperan en la cola. El BFF marca su salud como `degraded` y la campanita simplemente no muestra número.
+- La fecha se formatea en la **zona horaria del restaurante**, no en la del servidor (un contenedor corre en UTC).
+
+### Cómo se probó
+
+- Unitarios (127): plantillas de cada tipo, idempotencia, privacidad entre usuarios, filtros y paginación.
+- Integración contra **RabbitMQ real** (9): evento → notificación, duplicados, reintento ante fallo transitorio, DLQ con el motivo y eventos que no le interesan al servicio.
+- Verificaciones de que los tests detectan regresiones (rompiendo a propósito la idempotencia y el filtro por usuario).
+- Frontend: 8 tests nuevos (campanita, lista, marcar una/todas, filtro, error) y revisión visual a 320, 390 y 1280 px.
+- Punta a punta (`e2e/saga.e2e.mjs`, sección 12): pago aprobado, rechazado, cancelación del dueño y cancelación propia contra el sistema completo.
+
+### Limitaciones conocidas
+
+- **Los tests de integración no incluyen MongoDB**: simulan la bandeja en memoria. El comportamiento real de Mongo (índice único, TTL, `updateMany`) solo lo prueba la sección 12 del e2e con `docker compose`.
+- No hay avisos por `payment.refunded` (la devolución de la seña) ni para el dueño del local.
+- Solo bandeja en la app: sin email ni push.
+- El código de mensajería (conexión a RabbitMQ, sobre del evento, reintentos) está **copiado** en cada servicio. Un paquete compartido está pendiente.
+
+## Versión de NestJS y dependencias
+
+Los servicios usan **NestJS 11** (venían de la 10). La auditoría de producción pasó de **14 vulnerabilidades (4 altas) a 0**: `multer`, `lodash`, `qs`, `body-parser`, `uuid` y `file-type` se arreglaron solos al subir `@nestjs/platform-express`, `@nestjs/swagger` y `@nestjs/typeorm`; la última, `js-yaml`, con un `overrides` en el `package.json` raíz.
+
+**Por qué la 11 y no la 12** (la última): los paquetes de la 12 son solo ESM y Jest necesita Node 24.9 o más para cargarlos; cuando se eligió, todo (CI, Dockerfiles, `engines`) usaba Node 20. La 11 sigue siendo CommonJS y deja Jest 29 como está. Se decidió midiendo antes: la 11 ya cerraba 12 de las 14, y las 2 restantes (ambas `js-yaml`, a través de `@nestjs/swagger`) se resolvieron con el `override`. Ahora que el proyecto usa Node 24, la migración a la 12 ya es posible, pero no aporta nada urgente.
+
+Qué había que revisar de la guía de migración y qué resultó:
+
+| Cambio de la 11 | Nos afecta | Resultado |
+|---|---|---|
+| Express 5: rutas con `*`, `?` opcional, query parser simple | No: no hay rutas con comodines ni consultas anidadas | Sin cambios; los tests HTTP lo confirman |
+| `Reflector.getAllAndOverride` puede devolver `undefined` | Los 5 `roles.guard` | Ya manejaban el caso; compila y los tests de roles pasan |
+| Los hooks de cierre corren en orden inverso al de inicio | `RabbitConnection`, `OutboxRelay`, expiración, caché | Los tests de integración con RabbitMQ y Postgres reales pasan, y un `SIGTERM` cierra el proceso limpio |
+| Módulos dinámicos ya no se deduplican | Tests con `TestingModule` | Sin efecto: los tests pasan sin cambios |
+| `@nestjs/config` 4: orden de lectura | `ConfigService.get` | Sin efecto (solo leemos variables de entorno) |
+| `@nestjs/jwt` 11 tipa `expiresIn` estricto (`'1h'`, `'7d'`) | `auth-service` (`JWT_EXPIRES_IN` viene del entorno) | Único cambio de código: un cast con nombre y comentario |
+
+Una trampa que apareció: el `package-lock.json` viejo seguía fijando la 10 para las dependencias *peer* y quedaban **dos copias** de `@nestjs/common` (una por servicio), lo que rompe los tipos del compilador. Se regeneró el lockfile desde cero; `npm ls @nestjs/common` debe mostrar una sola versión.
+
+Fuera de la auditoría de producción quedan avisos en herramientas de **desarrollo** (`vitest` 3→5 y `jest` 29→30 son versiones mayores). No llegan a ninguna imagen ni se ejecutan en producción; es una tarea aparte.
+
+## Trazabilidad de logs
+
+Una sola acción del usuario atraviesa varios servicios (BFF → reservations → restaurants). Cuando algo falla hay que poder responder: *¿qué le pasó a ESA request en cada servicio?*
+
+```
+ navegador ──x-correlation-id──► web-bff ──mismo id──► reservations-service ──mismo id──► restaurants-service
+                                    │                          │                                │
+                              logs JSON                    logs JSON                        logs JSON
+                                    └────────────► Alloy ──► Loki ──► Grafana ◄───────────────┘
+```
+
+**Cómo funciona**
+1. El BFF recibe (o genera) un `x-correlation-id` y lo devuelve en la respuesta. Lo reenvía en **cada** llamada a otro servicio, y estos hacen lo mismo con los suyos.
+2. Dentro de cada servicio el id se guarda en un `AsyncLocalStorage` (una "variable global por request"), así que **cualquier log lo incluye solo**, sin pasarlo por parámetro y sin mezclar requests simultáneas.
+3. Cada servicio escribe **una línea JSON por evento**: `{"timestamp","level","service","context","message","correlationId","userId", ...}`.
+4. Cada request deja una línea `request completed` (método, ruta, status, duración) y cada llamada a otro servicio una línea `upstream call` (a quién, status, cuánto tardó). Así se ve **dónde se fue el tiempo**.
+5. **Alloy** lee los logs (de los contenedores o de `./logs`), saca `service` y `level` como etiquetas y los manda a **Loki**. **Grafana** los consulta.
+
+**Cómo verlo**
+
+```bash
+npm run obs:up                 # Loki, Alloy y Grafana
+npm run up                     # los servicios en Docker; sus logs se leen solos
+# ...o, si corrés los servicios con `npm run dev:*`, agregá LOG_DIR=../../logs a tu .env
+# y reiniciá: cada servicio escribe además ./logs/<servicio>.log, que Alloy también lee.
+```
+
+Abrí http://localhost:3030 → carpeta **Reservas** → **Trazabilidad**. Hacé una request desde el Swagger del BFF, copiá el header `x-correlation-id` de la respuesta y pegalo en la variable **correlationId** de arriba: aparecen, en orden, los logs de todos los servicios que tocó esa request. El dashboard también muestra requests por minuto, errores 5xx, latencia p95 y las llamadas más lentas entre servicios.
+
+Sin dashboard, en *Explore* de Grafana (consultas LogQL):
+
+```logql
+{app="reservas"} | json | correlationId="<el id>"                         # el recorrido de una request
+{app="reservas", level="error"}                                           # errores
+{service="web-bff"} | json | message="upstream call" | durationMs > 300   # llamadas lentas a otros servicios
+{app="reservas"} | json | userId="<id de usuario>"                        # todo lo de un usuario
+```
+
+Para leer los logs en la terminal sin JSON: `LOG_FORMAT=pretty`. Para ver más detalle: `LOG_LEVEL=debug`.
+
+### Decisiones de diseño
+
+- **JSON, no texto**: Loki filtra por campo (`| json | status >= 500`) sin parsear texto con regex.
+- **Etiquetas de Loki: solo `service`, `level` y `app`.** El `correlationId` NO es una etiqueta: tiene un valor distinto por request y Loki se vuelve lento con muchas combinaciones. Se busca en el contenido de la línea.
+- **Lo que nunca se loguea**: query string, body ni headers de las requests. Además, el logger reemplaza por `[REDACTED]` cualquier campo que se llame `password`, `token`, `authorization`, `secret`, `cookie` o `apiKey`, aunque alguien lo agregue por error. Hay tests que lo verifican.
+- **El id del cliente se acepta solo si es razonable** (8–100 caracteres alfanuméricos, `.`, `_` o `-`): evita que alguien inyecte basura o líneas falsas en los logs.
+- **Los logs de `/health` van en nivel debug** para no llenar todo de ruido.
+- **Retención de 7 días** en Loki, así el disco no crece sin límite.
+- **El código de observabilidad está copiado en los 4 servicios** (`src/observability/`), igual que los guards y el filtro de errores. Ya son cuatro copias idénticas: es el momento de moverlo a un paquete compartido del monorepo.
+
+### Limitaciones conocidas
+
+- Son **logs correlacionados**, no *tracing distribuido* (OpenTelemetry/Tempo): no hay una vista de árbol con spans. Con los tiempos de `upstream call` se reconstruye casi lo mismo, pero a mano. OpenTelemetry sería el siguiente paso natural.
+- No hay métricas (Prometheus) ni alertas.
+- **Grafana está abierto sin login** (`GF_AUTH_ANONYMOUS_*`) para comodidad en desarrollo: no usar así fuera de tu máquina.
+- Alloy necesita acceso al socket de Docker (solo lectura) para descubrir contenedores.
+- La correlación con **mensajes asíncronos** (RabbitMQ) se resolvió en la Fase 6: el `correlationId` viaja dentro de cada evento (y en el header `x-correlation-id` del mensaje) y los consumidores lo restauran, así una saga completa se sigue con un solo id en Grafana.
+- Sin Docker en mi entorno no pude probar la parte de contenedores (descubrimiento por socket, Grafana cargando el dashboard); sí probé Loki y Alloy reales leyendo archivos y todas las consultas del dashboard.
+
+## Producción (`docker-compose.prod.yml`)
+
+```
+Internet → Caddy (TLS, HSTS) → web (nginx: estáticos y /api) → web-bff → servicios
+                                   └─ /api/webhooks/gateway → payments-service
+```
+
+Para levantarlo en un servidor, con el dominio ya apuntando a su IP:
+
+```bash
+cp .env.prod.example .env                      # completar: lo vacío es obligatorio
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Para actualizar, `docker compose -f docker-compose.prod.yml pull` y el mismo `up -d`. Para volver atrás, `IMAGE_TAG=sha-<commit>` en el `.env`.
+
+### Decisiones que vale la pena mirar
+
+- **Un archivo completo y no un agregado sobre el de desarrollo**: un agregado hereda los puertos y las contraseñas por defecto, y olvidarse de pisar uno publica una base en internet. Se paga con repetir la configuración, pero acá conviene equivocarse para el lado de que algo no arranque.
+- **Solo Caddy publicado**: bases, RabbitMQ, Redis, BFF y servicios se hablan por la red interna de Docker. Grafana se publica solo en `127.0.0.1` y se entra con un túnel SSH, además de pedir login: ni siquiera se ve desde afuera.
+- **Sin contraseñas por defecto** (`${VAR:?}`): si falta una, `docker compose` no arranca y dice cuál. Lo mismo para la pasarela simulada: `ALLOW_SIMULATED_GATEWAY` vale `false` salvo que se acepte a conciencia.
+- **Imágenes de `release.yml` en vez de construir**: en el servidor corre exactamente lo que pasó el CI, y un VPS chico no se queda sin memoria compilando.
+- **`TRUST_PROXY=2`, un salto más que en desarrollo**: Caddy y nginx. Con 1, el BFF tomaría la IP de Caddy como la del cliente y el límite de intentos de login sería un solo contador para todo el mundo. Caddy descarta el `X-Forwarded-For` que manda el cliente, así que tampoco se puede inventar.
+- **El webhook va de nginx directo a payments-service, sin pasar por el BFF**: la firma HMAC se calcula sobre los bytes exactos del cuerpo, y el BFF parsearía el JSON. La ruta es exacta (`location =`): el resto de payments-service sigue sin poder alcanzarse desde afuera. Vive en nginx y no en Caddy para que también exista en desarrollo y el CI la pruebe.
+- **`depends_on` con `restart: true` en `web`**: nginx resuelve los nombres de sus destinos una sola vez, al arrancar. Si un deploy recrea el BFF y le cambia la IP, nginx seguiría llamando a la vieja; así se reinicia junto con él.
+- **Tope a los logs de Docker** (`max-size`): sin él crecen hasta llenar el disco. Lo que importa queda en Loki, 7 días.
+- **Healthcheck de Mongo con `--host "$(hostname)"`**: en el primer arranque el entrypoint levanta un servidor temporal solo en `127.0.0.1`, lo que podía dar un chequeo verde antes de tiempo. Por el nombre del contenedor recién responde el definitivo. El compose de desarrollo todavía no lo tiene.
+
+### Cómo se probó
+
+En local, con volúmenes vacíos (como un primer arranque), las imágenes de ghcr.io y `DOMAIN=localhost` (Caddy usa su propia CA en vez de Let's Encrypt):
+
+- El e2e completo a través de `https://localhost/api`: 99 verificaciones correctas, 0 fallidas. Para eso se publicó `restaurants-service` en un archivo de prueba aparte, porque el e2e crea el restaurante directo contra él.
+- `http` redirige a `https` (308), HSTS sale en la página y en la API, y ningún puerto interno responde desde afuera.
+- Webhook: sin firma da 401; con una firma válida llega a payments-service y da el 404 esperado para un cobro inexistente. Otras rutas de `/api/webhooks/` dan 404.
+- Límite de login: 11 intentos con un `X-Forwarded-For` inventado distinto en cada uno dan 429 igual, y otro cliente con el mismo email sigue dando 401. Con `TRUST_PROXY=1` ese otro cliente da 429: la prueba distingue los dos casos.
+- Recrear el BFF: `web` se reinicia solo y la API y el webhook siguen respondiendo.
+- Grafana: 401 sin login y con `admin/admin`, y con la contraseña del `.env` ve los logs de los 6 servicios en Loki.
+- Consumo después del e2e: ~1,5 GB de memoria en total.
+
+Y en el servidor real (Hetzner, `https://restoapp.duckdns.org`): Caddy obtuvo el certificado de Let's Encrypt solo, http redirige a https, HSTS sale en las respuestas, `/api/health` muestra los cinco servicios arriba y el webhook sin firma da 401.
+
+### Limitaciones conocidas
+
+- Un solo servidor: si se cae, se cae todo, y cada deploy tiene un corte de segundos.
+- En el servidor de 4 GB se levanta con `docker compose up -d caddy`, que arranca todo menos Loki, Alloy y Grafana: la observabilidad queda apagada para ahorrar memoria.
+- Sin backups todavía: las bases viven en volúmenes de Docker de esa única máquina.
+- Docker abre los puertos publicados saltándose `ufw`: el firewall tiene que ser el del proveedor.
+- El Swagger del BFF queda público en `/api/docs`.
+- Un webhook con firma válida pero sin `eventId` da 500 en vez de 400. Solo puede mandarlo quien tiene el secreto.
+
+## Hoja de ruta
+
+- [x] **Fase 1**: monorepo, `docker-compose`, `auth-service` con Swagger y tests
+- [x] **Fase 2**: `restaurants-service` (MongoDB, carta)
+- [x] **Fase 3**: `reservations-service` (disponibilidad, estados, concurrencia)
+- [x] **Fase 4**: `web-bff` con validación de JWT y agregación de datos
+- [x] **Fase 5**: trazabilidad (`x-correlation-id`, logs JSON, Loki + Grafana)
+- [x] **Fase 6**: RabbitMQ, `payments-service` y saga de seña (idempotencia, compensaciones, DLQ)
+- [x] **Fase 7**: frontend React (React Query, Context, Redux) con tests
+- [x] **Fase 8**: performance (Redis, k6, Lighthouse) con mediciones antes/después (front y backend medidos)
+- [x] **Fase 9**: CI/CD con GitHub Actions y publicación de imágenes
+- [x] **Panel del dueño** (solo reservas del local)
+- [x] **Notificaciones**: bandeja dentro de la app para el cliente (`notifications-service`)
+- [x] **ESLint** en todo el monorepo, con reglas de promesas y hooks, y un job en el CI
+- [x] **Endurecimiento**: secretos fuertes en producción, límite de intentos de login, tope de reservas sin pagar, headers de seguridad (CSP), healthchecks robustos
+- [x] **N+1 del BFF**: "Mis reservas" de 34 llamadas internas a 3, medido con k6 (ver «El N+1 de Mis reservas»)
+- [x] **Migraciones de TypeORM** en lugar de `synchronize` (ver «Migraciones de la base»)
+- [x] **Imágenes reproducibles**: Node 24 y `npm ci` construyendo desde la raíz del monorepo, donde está el lockfile
+- [x] **Deploy** en un VPS de Hetzner, en este orden:
+  1. [x] `docker-compose.prod.yml`: solo Caddy publicado, TLS automático, HSTS, sin contraseñas por defecto, Grafana con login, y las imágenes de `release.yml` en vez de construir (ver «Producción»).
+  2. [x] Una ruta pública para los webhooks de la pasarela (`/api/webhooks/gateway` a través de nginx).
+  3. [x] Crear el VPS, apuntar el dominio y levantarlo (https://restoapp.duckdns.org).
+- [ ] **QR de pago con Mercado Pago**: un `MercadoPagoGateway` detrás de la interfaz `PaymentGateway`. Necesita el deploy, porque Mercado Pago avisa el resultado por webhook a una URL pública.
+
+## Estructura
+
+```
+reservas-platform/
+├── package.json            # npm workspaces
+├── eslint.config.mjs       # una sola configuración de lint para todo el repo
+├── README.md               # resumen del proyecto
+├── docs/                   # esta documentación y las capturas
+├── docker-compose.yml      # desarrollo
+├── docker-compose.prod.yml # producción (ver «Producción»)
+├── Caddyfile               # TLS y HSTS en producción
+├── .env.example
+├── .env.prod.example
+├── e2e/                    # prueba de punta a punta de la saga
+├── perf/                   # pruebas de carga con k6, datos de prueba y comparador (Fase 8)
+├── observability/          # Loki, Alloy, Grafana
+├── .github/
+│   ├── workflows/          # ci.yml (pruebas) y release.yml (publica imágenes)
+│   └── dependabot.yml
+├── apps/
+│   └── web/                # frontend (Vite + React + TypeScript + Tailwind)
+└── services/
+    ├── auth-service/
+    ├── restaurants-service/
+    ├── reservations-service/
+    ├── payments-service/
+    ├── notifications-service/
+    └── web-bff/
+```
