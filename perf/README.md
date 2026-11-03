@@ -4,7 +4,7 @@ Acá está todo lo necesario para medir **antes y después** del caché de Redis
 
 > **Por qué hay que medir en tu máquina:** yo no tengo MongoDB en mi entorno, así que no puedo darte los tiempos del backend.
 > Lo que sí hice fue probar que los scripts corren, que el caché devuelve datos correctos y que se invalida bien.
-> Los números del front (Lighthouse) sí los medí; están en el README principal.
+> Los números del front (Lighthouse) sí los medí; están en `docs/ARQUITECTURA.md`.
 
 ## Qué se mide
 
@@ -72,7 +72,7 @@ docker compose --profile perf run --rm k6 run /perf/read-heavy.k6.js --summary-e
 node perf/compare.mjs perf/results/before.json perf/results/after.json
 ```
 
-Imprime una tabla en Markdown lista para pegar en el README principal.
+Imprime una tabla en Markdown lista para pegar en `docs/ARQUITECTURA.md`.
 
 ### 4. Comprobar que el caché de verdad trabajó
 
@@ -111,7 +111,7 @@ Con `npm run infra:up` alcanza (los servicios no hacen falta). Al final invalida
 ## «Mis reservas»: el N+1 del BFF
 
 Mide `GET /reservations/mine?limit=50` (lo que pide el front) y `/me/overview` de un cliente con muchas reservas pagadas.
-Resultados y explicación en el README principal, «El N+1 de Mis reservas».
+Resultados y explicación en `docs/ARQUITECTURA.md`, «El N+1 de Mis reservas».
 
 ```bash
 node perf/seed-reservations.mjs     # perf-diner con 30 reservas pagadas en 3 restaurantes (~30 s)
