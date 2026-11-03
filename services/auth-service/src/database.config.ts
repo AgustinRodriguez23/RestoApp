@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { migrations } from './migrations';
+import { OwnerRequest } from './owner-requests/owner-request.entity';
 import { User } from './users/user.entity';
 
 /**
@@ -27,7 +28,7 @@ export function typeOrmOptions(config: ConfigService): TypeOrmModuleOptions {
     // Las migraciones escriben "users", no "<schema>"."users": con el search_path en el schema del servicio,
     // sus tablas caen ahí. public va después para seguir viendo las extensiones.
     extra: schema ? { options: `-c search_path=${schema},public` } : undefined,
-    entities: [User],
+    entities: [User, OwnerRequest],
     // El esquema lo definen las migraciones (src/migrations), que se aplican al arrancar; synchronize no se usa
     // nunca (ver el de reservations-service).
     migrations,
