@@ -899,7 +899,7 @@ Y en el servidor real (Hetzner, `https://restoapp.duckdns.org`): Caddy obtuvo el
 
 - Un solo servidor: si se cae, se cae todo, y cada deploy tiene un corte de segundos.
 - En el servidor de 4 GB se levanta con `docker compose up -d caddy`, que arranca todo menos Loki, Alloy y Grafana: la observabilidad queda apagada para ahorrar memoria.
-- Sin backups todavía: las bases viven en volúmenes de Docker de esa única máquina.
+- Los backups son dumps diarios en el mismo servidor (`scripts/backup.sh` con cron, 14 días). Para no depender de esa máquina hay que sacarlos de ahí: con los backups de Hetzner o bajándolos a mano (ver [OPERACION.md](./OPERACION.md)).
 - Docker abre los puertos publicados saltándose `ufw`: el firewall tiene que ser el del proveedor.
 - El Swagger del BFF queda público en `/api/docs`.
 - Un webhook con firma válida pero sin `eventId` da 500 en vez de 400. Solo puede mandarlo quien tiene el secreto.

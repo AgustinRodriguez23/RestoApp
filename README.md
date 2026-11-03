@@ -122,7 +122,9 @@ npm run lint
 
 ### Deploy
 
-Corre en un VPS de Hetzner con `docker-compose.prod.yml`. Caddy pide y renueva solo el certificado HTTPS, y el servidor baja las imágenes ya publicadas por el CI en vez de construirlas.
+Corre en un VPS de Hetzner con `docker-compose.prod.yml`. Caddy pide y renueva solo el certificado HTTPS, y el servidor baja las imágenes ya publicadas por el CI en vez de construirlas. Las bases se respaldan todas las noches con un script y `cron`.
+
+Cómo se actualiza, se vuelve a una versión anterior, se miran los logs y se restaura un backup: [`docs/OPERACION.md`](./docs/OPERACION.md).
 
 ### Documentación técnica
 
@@ -133,7 +135,6 @@ El detalle de cada decisión, con las alternativas que se descartaron, las medic
 - **Solicitud para ser dueño**: hoy las cuentas de dueño se crean a mano. La idea es que un cliente pida serlo y un administrador lo apruebe desde un panel.
 - **Cobro real con Mercado Pago**: la pasarela ya está detrás de una interfaz, así que sumarla no cambia el resto del servicio.
 - **La cuenta de la mesa**: registrar lo consumido, descontar la seña y cobrar con QR.
-- **Backups automáticos** de las bases del servidor.
 
 ## Contacto
 
