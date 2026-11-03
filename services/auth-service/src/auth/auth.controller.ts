@@ -45,4 +45,18 @@ export class AuthController {
   me(@Req() req: AuthenticatedRequest): Promise<UserResponseDto> {
     return this.auth.getProfile(req.user.sub);
   }
+
+  @Post('token')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Volver a emitir el token con los datos actuales',
+    description: 'Para cuando cambia el rol del usuario. El token nuevo vence cuando vencía el anterior.',
+  })
+  @ApiOkResponse({ type: AuthResponseDto })
+  @ApiUnauthorizedResponse({ description: 'Token faltante, inválido o expirado' })
+  renewToken(@Req() req: AuthenticatedRequest): Promise<AuthResponseDto> {
+    return this.auth.renewToken(req.user.sub, req.user.exp);
+  }
 }

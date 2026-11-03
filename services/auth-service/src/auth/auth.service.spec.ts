@@ -107,7 +107,7 @@ describe('AuthService', () => {
       ).rejects.toBeInstanceOf(QueryFailedError);
     });
 
-    const ownerDto = { email: 'dueno@example.com', name: 'Dueño', password: 'Password123', role: Role.RESTAURANT_OWNER };
+    const ownerDto = { email: 'dueno@example.com', name: 'Dueño', password: 'Password123', role: Role.RESTAURANT_OWNER as const };
 
     it('rechaza con 403 el alta de un dueño si ALLOW_OWNER_SELF_REGISTER no está activado', async () => {
       await expect(service.register(ownerDto)).rejects.toBeInstanceOf(ForbiddenException);
@@ -193,6 +193,38 @@ describe('AuthService', () => {
     it('lanza 401 si el usuario ya no existe', async () => {
       users.findById.mockResolvedValue(null);
       await expect(service.getProfile('x')).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+  });
+
+  describe('renewToken', () => {
+    const inSeconds = (s: number) => Math.floor(Date.now() / 1000) + s;
+
+    it('firma con el rol actual de la base y lo que le quedaba al token anterior', async () => {
+      users.findById.mockResolvedValue({ ...baseUser, role: Role.RESTAURANT_OWNER } as User);
+
+      const result = await service.renewToken('user-1', inSeconds(600));
+
+      expect(result.user.role).toBe(Role.RESTAURANT_OWNER);
+      const [payload, options] = jwt.signAsync.mock.calls[0] as [{ role: Role }, { expiresIn: number }];
+      expect(payload.role).toBe(Role.RESTAURANT_OWNER);
+      // 600 s, o 599 si el segundo cambió en el medio: nunca más que lo que quedaba
+      expect(options.expiresIn).toBeGreaterThanOrEqual(599);
+      expect(options.expiresIn).toBeLessThanOrEqual(600);
+    });
+
+    it('lanza 401 si el token ya venció o no trae vencimiento', async () => {
+      users.findById.mockResolvedValue(baseUser);
+
+      await expect(service.renewToken('user-1', inSeconds(-1))).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(service.renewToken('user-1', undefined as unknown as number)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(jwt.signAsync).not.toHaveBeenCalled();
+    });
+
+    it('lanza 401 si el usuario ya no existe', async () => {
+      users.findById.mockResolvedValue(null);
+      await expect(service.renewToken('x', inSeconds(600))).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 });
