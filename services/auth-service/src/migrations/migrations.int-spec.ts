@@ -11,9 +11,11 @@
 import { ConfigService } from '@nestjs/config';
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { typeOrmOptions } from '../database.config';
+import { User } from '../users/user.entity';
+import { migrations } from './index';
 
 const PREFIX = `it_mig_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-const INITIAL = 'InitialSchema1761700000000';
+const ALL = migrations.map((migration) => migration.name);
 
 describe('migraciones de auth-service (PostgreSQL real)', () => {
   let admin: DataSource;
@@ -72,7 +74,7 @@ describe('migraciones de auth-service (PostgreSQL real)', () => {
 
     const applied = await ds.runMigrations();
 
-    expect(applied.map((migration) => migration.name)).toEqual([INITIAL]);
+    expect(applied.map((migration) => migration.name)).toEqual(ALL);
     expect(await pendingChanges(ds)).toEqual([]);
     // Y volver a correrlas no hace nada
     expect(await ds.runMigrations()).toEqual([]);
@@ -83,7 +85,7 @@ describe('migraciones de auth-service (PostgreSQL real)', () => {
     const ds = await connect(schema);
     await ds.runMigrations();
 
-    await ds.undoLastMigration();
+    for (let i = 0; i < ALL.length; i++) await ds.undoLastMigration();
 
     expect(await leftovers(ds, schema)).toEqual([]);
     await ds.runMigrations();
@@ -92,16 +94,17 @@ describe('migraciones de auth-service (PostgreSQL real)', () => {
 
   it('en una base creada con synchronize (de antes de las migraciones) se registran sin tocar los datos', async () => {
     const schema = `${PREFIX}_legacy`;
-    // Lo que hacía la app antes: el driver instalaba la extensión y synchronize creaba las tablas
+    // Lo que hacía la app antes: el driver instalaba la extensión y synchronize creaba las tablas. En ese entonces
+    // existía solo users; las demás las agregan las migraciones siguientes.
     await admin.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public');
-    const legacy = await connect(schema, { migrations: [], synchronize: true });
+    const legacy = await connect(schema, { migrations: [], entities: [User], synchronize: true });
     await legacy.query(`INSERT INTO users (email, name, password_hash) VALUES ('legado@example.com', 'Legado', 'x')`);
     await legacy.destroy();
 
     const ds = await connect(schema);
     const applied = await ds.runMigrations();
 
-    expect(applied.map((migration) => migration.name)).toEqual([INITIAL]);
+    expect(applied.map((migration) => migration.name)).toEqual(ALL);
     expect(await pendingChanges(ds)).toEqual([]);
     expect(await ds.query('SELECT email FROM users')).toEqual([{ email: 'legado@example.com' }]);
   });

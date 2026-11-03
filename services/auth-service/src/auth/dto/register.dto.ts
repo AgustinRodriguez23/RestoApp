@@ -1,6 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { Role } from '../../users/role.enum';
+
+/**
+ * Los roles que se pueden pedir al registrarse. Es una lista y no el enum entero a propósito: con IsEnum(Role),
+ * sumar un rol al enum (como ADMIN) lo habilitaría en el registro público sin que nadie lo decida.
+ */
+export const SELF_REGISTER_ROLES = [Role.CUSTOMER, Role.RESTAURANT_OWNER] as const;
 
 export class RegisterDto {
   @ApiProperty({ example: 'ana@example.com' })
@@ -19,8 +25,8 @@ export class RegisterDto {
   @MaxLength(72) // bcrypt ignora lo que pase de 72 bytes
   password: string;
 
-  @ApiPropertyOptional({ enum: Role, default: Role.CUSTOMER })
+  @ApiPropertyOptional({ enum: SELF_REGISTER_ROLES, default: Role.CUSTOMER })
   @IsOptional()
-  @IsEnum(Role)
-  role?: Role;
+  @IsIn(SELF_REGISTER_ROLES)
+  role?: (typeof SELF_REGISTER_ROLES)[number];
 }

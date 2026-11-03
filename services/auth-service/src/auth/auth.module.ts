@@ -24,6 +24,7 @@ type ExpiresIn = NonNullable<JwtSignOptions['expiresIn']>;
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtAuthGuard, RolesGuard],
-  exports: [JwtAuthGuard, RolesGuard],
+  // JwtModule también: Nest arma los guards en el módulo del controlador que los usa, y JwtAuthGuard necesita JwtService
+  exports: [JwtAuthGuard, RolesGuard, JwtModule],
 })
 export class AuthModule {}

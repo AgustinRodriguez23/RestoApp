@@ -14,7 +14,7 @@ El `README.md` es el resumen para quien visita el repo. La arquitectura y las de
 
 | Paquete | Qué hace | Base | Puerto |
 |---|---|---|---|
-| `services/auth-service` | registro, login, JWT, roles | PostgreSQL | 3001 |
+| `services/auth-service` | registro, login, JWT, roles, solicitudes para ser dueño | PostgreSQL | 3001 |
 | `services/restaurants-service` | restaurantes, mesas, horarios, carta (caché en Redis) | MongoDB | 3002 |
 | `services/reservations-service` | reservas, disponibilidad, seña, vencimiento | PostgreSQL | 3003 |
 | `services/payments-service` | cobro de la seña, idempotencia, webhooks, reembolsos | PostgreSQL | 3004 |

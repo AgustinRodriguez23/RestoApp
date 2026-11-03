@@ -4,7 +4,8 @@ import { Request } from 'express';
 import { setCurrentUserId } from '../observability/request-context';
 import { JwtPayload } from './jwt-payload';
 
-export type AuthenticatedRequest = Request & { user: JwtPayload };
+/** exp lo agrega jsonwebtoken al firmar (segundos desde 1970): el token ya verificado siempre lo trae. */
+export type AuthenticatedRequest = Request & { user: JwtPayload & { exp: number } };
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -19,7 +20,7 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     try {
-      request.user = await this.jwt.verifyAsync<JwtPayload>(token);
+      request.user = await this.jwt.verifyAsync<AuthenticatedRequest['user']>(token);
       setCurrentUserId(request.user.sub);
     } catch {
       throw new UnauthorizedException('Token inválido o expirado');

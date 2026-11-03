@@ -85,17 +85,35 @@ export class AuthService {
     return this.toUserResponse(user);
   }
 
-  private async buildResponse(user: User): Promise<AuthResponseDto> {
+  /**
+   * Un token nuevo con los datos actuales de la base: el rol viaja dentro del JWT, así que cuando cambia (al aprobar
+   * una solicitud para ser dueño) el token viejo sigue diciendo el anterior hasta que se pide otro.
+   * Vence cuando vencía el anterior: renovar actualiza los datos pero no alarga la sesión. Si la alargara, un token
+   * robado se podría renovar para siempre.
+   */
+  async renewToken(userId: string, expiresAt: number): Promise<AuthResponseDto> {
+    const user = await this.users.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('El usuario ya no existe');
+    }
+    const secondsLeft = expiresAt - Math.floor(Date.now() / 1000);
+    // Escrito así y no "<= 0" para que un token sin exp (NaN) tampoco pase
+    if (!(secondsLeft > 0)) {
+      throw new UnauthorizedException('Token inválido o expirado');
+    }
+    return this.buildResponse(user, secondsLeft);
+  }
+
+  private async buildResponse(user: User, expiresIn?: number): Promise<AuthResponseDto> {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
       name: user.name,
       role: user.role,
     };
-    return {
-      accessToken: await this.jwt.signAsync(payload),
-      user: this.toUserResponse(user),
-    };
+    // Sin expiresIn vale el del módulo (JWT_EXPIRES_IN)
+    const accessToken = expiresIn ? await this.jwt.signAsync(payload, { expiresIn }) : await this.jwt.signAsync(payload);
+    return { accessToken, user: this.toUserResponse(user) };
   }
 
   private toUserResponse(user: User): UserResponseDto {
