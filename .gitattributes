@@ -1,0 +1,2 @@
+# Los scripts corren en el servidor Linux: con fin de línea CRLF (el de Windows) bash falla con "$'\r': command not found"
+*.sh text eol=lf
