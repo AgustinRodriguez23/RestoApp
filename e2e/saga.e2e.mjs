@@ -14,8 +14,12 @@
  *                      por defecto son 15 min; para probarlo rápido levantá reservations con PAYMENT_WINDOW_MINUTES=1)
  *
  * No necesita librerías: usa fetch (Node 20+). Cada escenario usa un horario distinto, así que se puede repetir.
+ * La sección de la solicitud para ser dueño crea un admin con `docker compose exec` sobre postgres-auth (como en
+ * producción: la app no tiene forma de crearlo), así que necesita las bases levantadas con el docker-compose.yml del repo.
  */
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 const BFF = (process.env.BFF_URL ?? 'http://localhost:3000').replace(/\/$/, '');
 const RESTAURANTS = (process.env.RESTAURANTS_URL ?? 'http://localhost:3002').replace(/\/$/, '');
@@ -76,6 +80,22 @@ async function register(role, label) {
   const login = await http('POST', `${BFF}/auth/login`, { body: { email, password } });
   return login.body.accessToken;
 }
+
+/**
+ * El mismo UPDATE que se corre a mano en producción (docs/OPERACION.md). El email lo arma este script (sin comillas),
+ * por eso se puede meter en el SQL. Las variables POSTGRES_* las resuelve el shell del contenedor, no el de acá.
+ */
+function promoteToAdmin(email) {
+  const sql = `UPDATE users SET role = 'ADMIN' WHERE email = '${email}'`;
+  const out = execFileSync('docker', ['compose', 'exec', '-T', 'postgres-auth', 'sh', '-c', `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "${sql}"`], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    encoding: 'utf8',
+  });
+  if (!out.includes('UPDATE 1')) throw new Error(`No se pudo crear el admin: ${out}`);
+}
+
+/** El payload del JWT, sin verificar la firma: solo para leer el rol y el vencimiento. */
+const claims = (token) => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
 
 async function ensureRestaurant(ownerToken) {
   if (process.env.E2E_RESTAURANT_ID) return process.env.E2E_RESTAURANT_ID;
@@ -503,6 +523,68 @@ async function main() {
 
     await http('POST', `${BFF}/reservations/${held[0].body.id}/cancel`, { token: hoarder });
     check('cancelar una libera el cupo', (await reserve(slot(day, '20:00'), {}, hoarder)).status === 201);
+  }
+
+  // ------------------------------------------------------------------ 14
+  // Un cliente pide ser dueño, un admin lo revisa y, con el token renovado, ya puede cargar su restaurante
+  if (!process.env.E2E_RESTAURANT_ID) {
+    section('14. Solicitud para ser dueño: pedir, rechazar, aprobar y renovar el token');
+    const requests = `${BFF}/owner-requests`;
+    const applicant = await register('CUSTOMER', 'aspirante');
+    const adminEmail = `e2e-admin-${RUN}@example.com`;
+    await register('CUSTOMER', 'admin');
+    promoteToAdmin(adminEmail);
+    // El rol viaja en el token: el admin tiene que volver a iniciar sesión, igual que en producción
+    const admin = (await http('POST', `${BFF}/auth/login`, { body: { email: adminEmail, password: 'Password123' } })).body.accessToken;
+    check('el admin recién creado entra con el rol ADMIN en el token', claims(admin).role === 'ADMIN', JSON.stringify(claims(admin)));
+
+    const adminSignup = await http('POST', `${BFF}/auth/register`, { body: { email: `e2e-x-${RUN}@example.com`, name: 'Colado', password: 'Password123', role: 'ADMIN' } });
+    check('nadie puede registrarse como ADMIN (400)', adminSignup.status === 400, String(adminSignup.status));
+
+    check('antes de pedir, "mi solicitud" da 404', (await http('GET', `${requests}/mine`, { token: applicant })).status === 404);
+    const input = { restaurantName: `E2E Aspirante ${RUN}`, address: 'Calle Falsa 789, Quilmes', phone: '+54 11 5555-1234' };
+    check('un teléfono inválido se rechaza (400)', (await http('POST', requests, { token: applicant, body: { ...input, phone: 'llamame' } })).status === 400);
+
+    const first = await http('POST', requests, { token: applicant, body: input });
+    check('el cliente envía la solicitud y queda PENDING (201)', first.status === 201 && first.body.status === 'PENDING', `${first.status} ${JSON.stringify(first.body)}`);
+    check('una segunda mientras hay una pendiente da 409', (await http('POST', requests, { token: applicant, body: input })).status === 409);
+    check('un cliente no ve las solicitudes de otros (403)', (await http('GET', requests, { token: applicant })).status === 403);
+    check('ni puede aprobarse a sí mismo (403)', (await http('POST', `${requests}/${first.body.id}/approve`, { token: applicant })).status === 403);
+
+    const pending = await http('GET', `${requests}?status=PENDING&limit=50`, { token: admin });
+    const listed = pending.body?.data?.find((r) => r.id === first.body.id);
+    check('el admin la ve en las pendientes, con quién la envió', listed?.applicant?.email === `e2e-aspirante-${RUN}@example.com`, JSON.stringify(listed));
+
+    check('rechazar sin motivo da 400', (await http('POST', `${requests}/${first.body.id}/reject`, { token: admin, body: {} })).status === 400);
+    const rejected = await http('POST', `${requests}/${first.body.id}/reject`, { token: admin, body: { reason: 'Falta el teléfono del local.' } });
+    check('el admin la rechaza con motivo', rejected.status === 200 && rejected.body.status === 'REJECTED', `${rejected.status} ${JSON.stringify(rejected.body)}`);
+    const mine = (await http('GET', `${requests}/mine`, { token: applicant })).body;
+    check('el cliente ve el rechazo y el motivo', mine?.status === 'REJECTED' && mine.rejectionReason === 'Falta el teléfono del local.', JSON.stringify(mine));
+
+    const second = await http('POST', requests, { token: applicant, body: { ...input, phone: '+54 11 4444-0000' } });
+    check('después de un rechazo puede volver a pedir (201)', second.status === 201 && second.body.status === 'PENDING', String(second.status));
+    const approved = await http('POST', `${requests}/${second.body.id}/approve`, { token: admin });
+    check('el admin la aprueba', approved.status === 200 && approved.body.status === 'APPROVED', `${approved.status} ${JSON.stringify(approved.body)}`);
+    check('revisarla de nuevo da 409', (await http('POST', `${requests}/${second.body.id}/reject`, { token: admin, body: { reason: 'Me arrepentí.' } })).status === 409);
+
+    // El token viejo todavía dice CUSTOMER: el BFF lo frena, y auth-service mira el rol en la base, no en el token.
+    // El cuerpo tiene que ser válido: el BFF valida antes de mirar el rol, y con uno vacío respondería 400
+    const restaurant = { name: input.restaurantName, cuisine: 'Pruebas', address: input.address, openingHours: [{ dayOfWeek: 5, opens: '20:00', closes: '23:00' }], tables: [{ number: 1, capacity: 4 }] };
+    const stale = await http('POST', `${BFF}/owner/restaurants`, { token: applicant, body: restaurant });
+    check('con el token viejo todavía no puede crear restaurantes (403)', stale.status === 403, String(stale.status));
+    check('ni pedir de nuevo: ya es dueño en la base (403)', (await http('POST', requests, { token: applicant, body: input })).status === 403);
+
+    const renewed = await http('POST', `${BFF}/auth/token`, { token: applicant });
+    const owner2 = renewed.body?.accessToken;
+    check('renovar el token responde 200 con el rol nuevo', renewed.status === 200 && renewed.body.user?.role === 'RESTAURANT_OWNER' && claims(owner2).role === 'RESTAURANT_OWNER', `${renewed.status} ${JSON.stringify(renewed.body?.user)}`);
+    // ±1 s: el servicio y la librería del JWT redondean el "ahora" cada uno por su lado
+    check('el token nuevo vence cuando vencía el viejo (renovar no alarga la sesión)', Math.abs(claims(owner2).exp - claims(applicant).exp) <= 1, `${claims(owner2).exp} vs ${claims(applicant).exp}`);
+    check('sin token no se puede renovar (401)', (await http('POST', `${BFF}/auth/token`)).status === 401);
+
+    const created = await http('POST', `${BFF}/owner/restaurants`, { token: owner2, body: restaurant });
+    const newId = created.body?.id ?? created.body?._id;
+    check('con el token nuevo carga su restaurante (201)', created.status === 201 && !!newId, `${created.status} ${JSON.stringify(created.body)}`);
+    if (newId) await http('DELETE', `${BFF}/owner/restaurants/${newId}`, { token: owner2 });
   }
 
   // ------------------------------------------------------------------ 7
