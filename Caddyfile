@@ -2,6 +2,12 @@
 # {$VARIABLE} se lee del entorno del contenedor (ver docker-compose.prod.yml).
 {
 	email {$ACME_EMAIL}
+	# Sin HTTP/3: con él activo, Chrome cortaba la descarga del bundle de JS a la mitad (ERR_QUIC_PROTOCOL_ERROR) y la
+	# página quedaba en blanco, mientras que por HTTP/1.1 y HTTP/2 el mismo archivo llegaba entero. Para un sitio de
+	# este tamaño HTTP/2 rinde igual. Sin h3, Caddy tampoco anuncia Alt-Svc y los navegadores dejan de intentarlo.
+	servers {
+		protocols h1 h2
+	}
 }
 
 {$DOMAIN} {

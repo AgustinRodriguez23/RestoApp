@@ -68,8 +68,7 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:?Definí ACME_EMAIL en el archivo .env}
     ports:
       - "80:80" # Let's Encrypt valida por acá, y Caddy redirige el resto a https
-      - "443:443"
-      - "443:443/udp" # HTTP/3
+      - "443:443" # Solo TCP: HTTP/3 (UDP) está apagado en el Caddyfile
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Los certificados: sin este volumen se pedirían de nuevo en cada arranque hasta chocar con el límite de Let's Encrypt
