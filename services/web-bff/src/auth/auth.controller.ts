@@ -40,4 +40,14 @@ export class AuthController {
   me(@Ctx() ctx: CallContext) {
     return this.upstream.call('auth', { path: '/auth/me' }, ctx);
   }
+
+  @Post('token')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Token nuevo con el rol actual (por ejemplo, al aprobarse la solicitud para ser dueño). Vence cuando vencía el anterior.' })
+  @ApiOkResponse({ description: '{ accessToken, user }' })
+  renewToken(@Ctx() ctx: CallContext) {
+    return this.upstream.call('auth', { method: 'POST', path: '/auth/token' }, ctx);
+  }
 }

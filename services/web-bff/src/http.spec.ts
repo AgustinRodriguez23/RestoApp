@@ -126,6 +126,104 @@ describe('web-bff (HTTP + servicios falsos)', () => {
       expect(res.status).toBe(200);
       expect(auth.calls[0].headers.authorization).toBe(bearer);
     });
+
+    it('nadie puede registrarse como admin: 400 sin llamar a auth-service', async () => {
+      const res = await server().post('/auth/register').send({ email: 'ana@example.com', name: 'Ana', password: 'Password123', role: 'ADMIN' });
+
+      expect(res.status).toBe(400);
+      expect(auth.calls).toHaveLength(0);
+    });
+
+    it('POST /auth/token reenvía el token del usuario y devuelve el nuevo', async () => {
+      auth.handler = () => ok({ accessToken: 'jwt-nuevo', user: { id: 'user-1', role: 'RESTAURANT_OWNER' } });
+      const bearer = authz();
+
+      const res = await server().post('/auth/token').set('Authorization', bearer);
+
+      expect(res.status).toBe(200);
+      expect(res.body.accessToken).toBe('jwt-nuevo');
+      expect(auth.calls[0]).toMatchObject({ method: 'POST', path: '/auth/token', headers: { authorization: bearer } });
+    });
+  });
+
+  describe('solicitudes para ser dueño', () => {
+    const REQ_ID = '0b6c7d8e-1f2a-4b3c-8d4e-5f6a7b8c9d0e';
+    const solicitud = { restaurantName: 'La Esquina', address: 'Av. Corrientes 1234', phone: '+54 11 5555-1234' };
+
+    it('enviar reenvía el body (sin espacios de más) y el token', async () => {
+      auth.handler = () => ({ status: 201, body: { id: REQ_ID, status: 'PENDING' } });
+      const bearer = authz();
+
+      const res = await server().post('/owner-requests').set('Authorization', bearer).send({ ...solicitud, restaurantName: '  La Esquina  ' });
+
+      expect(res.status).toBe(201);
+      expect(auth.calls[0]).toMatchObject({ method: 'POST', path: '/owner-requests', body: solicitud, headers: { authorization: bearer } });
+    });
+
+    it('body inválido o con campos de más: 400 sin llamar a auth-service', async () => {
+      const badPhone = await server().post('/owner-requests').set('Authorization', authz()).send({ ...solicitud, phone: 'llamame' });
+      const extra = await server().post('/owner-requests').set('Authorization', authz()).send({ ...solicitud, status: 'APPROVED' });
+
+      expect([badPhone.status, extra.status]).toEqual([400, 400]);
+      expect(auth.calls).toHaveLength(0);
+    });
+
+    it('sin token: 401 sin llamar a auth-service', async () => {
+      const res = await server().get('/owner-requests/mine');
+
+      expect(res.status).toBe(401);
+      expect(auth.calls).toHaveLength(0);
+    });
+
+    it('los errores de auth-service llegan tal cual: 404 sin solicitud, 409 ya pendiente, 403 de un cliente que quiere aprobar', async () => {
+      auth.handler = (call) => {
+        if (call.path === '/owner-requests/mine') return fail(404, 'Todavía no enviaste una solicitud');
+        if (call.path === '/owner-requests') return fail(409, 'Ya tenés una solicitud pendiente');
+        return fail(403, 'No tenés permisos para esta acción');
+      };
+
+      const mine = await server().get('/owner-requests/mine').set('Authorization', authz());
+      const again = await server().post('/owner-requests').set('Authorization', authz()).send(solicitud);
+      const approve = await server().post(`/owner-requests/${REQ_ID}/approve`).set('Authorization', authz());
+
+      expect([mine.status, again.status, approve.status]).toEqual([404, 409, 403]);
+      expect(again.body.message).toBe('Ya tenés una solicitud pendiente');
+    });
+
+    it('el listado reenvía los filtros y rechaza un estado inválido', async () => {
+      auth.handler = () => ok({ data: [], page: 2, limit: 10, total: 0, totalPages: 0 });
+
+      const res = await server().get('/owner-requests?status=APPROVED&page=2').set('Authorization', authz());
+      const bad = await server().get('/owner-requests?status=CUALQUIERA').set('Authorization', authz());
+
+      expect(res.status).toBe(200);
+      expect(query(auth.calls[0])).toEqual({ status: 'APPROVED', page: '2' });
+      expect(bad.status).toBe(400);
+      expect(auth.calls).toHaveLength(1);
+    });
+
+    it('rechazar reenvía el motivo; sin motivo, 400', async () => {
+      auth.handler = () => ok({ id: REQ_ID, status: 'REJECTED' });
+
+      const res = await server().post(`/owner-requests/${REQ_ID}/reject`).set('Authorization', authz()).send({ reason: 'No pudimos verificar el local.' });
+      const missing = await server().post(`/owner-requests/${REQ_ID}/reject`).set('Authorization', authz()).send({});
+
+      expect(res.status).toBe(200);
+      expect(auth.calls[0]).toMatchObject({ path: `/owner-requests/${REQ_ID}/reject`, body: { reason: 'No pudimos verificar el local.' } });
+      expect(missing.status).toBe(400);
+      expect(auth.calls).toHaveLength(1);
+    });
+
+    it('un id que no es UUID da 400, y si aprobar falla NO se reintenta', async () => {
+      auth.handler = () => fail(500, 'boom');
+
+      const badId = await server().post('/owner-requests/123/approve').set('Authorization', authz());
+      const res = await server().post(`/owner-requests/${REQ_ID}/approve`).set('Authorization', authz());
+
+      expect(badId.status).toBe(400);
+      expect(res.status).toBe(502);
+      expect(auth.callsTo(`/owner-requests/${REQ_ID}/approve`)).toHaveLength(1);
+    });
   });
 
   describe('seguridad', () => {
@@ -1136,12 +1234,17 @@ describe('web-bff (HTTP + servicios falsos)', () => {
           '/auth/login',
           '/auth/me',
           '/auth/register',
+          '/auth/token',
           '/health',
           '/me/overview',
           '/notifications',
           '/notifications/read-all',
           '/notifications/unread-count',
           '/notifications/{id}/read',
+          '/owner-requests',
+          '/owner-requests/mine',
+          '/owner-requests/{id}/approve',
+          '/owner-requests/{id}/reject',
           '/owner/reservations/{id}/status',
           '/owner/restaurants',
           '/owner/restaurants/{id}',
