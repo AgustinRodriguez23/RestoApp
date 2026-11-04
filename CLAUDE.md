@@ -70,3 +70,11 @@ Integración con otro Postgres: variables `TEST_DB_HOST/PORT/USER/PASSWORD/NAME`
 - Paquete compartido para el código duplicado (JWT, DTOs, enums, mensajería).
 - NestJS 12 (requiere Node 24 y ESM) y avisos de audit en dev tools (vitest 3→5, jest 29→30).
 - Notificaciones por `payment.refunded` y para el dueño del local; email o push.
+
+## Ahorro de contexto
+
+- Antes de leer un archivo entero, busca con grep y lee solo lo que necesites.
+- Para explorar el proyecto, usa un subagente y traeme solo el resumen.
+- Mostrame el diff, no el archivo completo.
+- No repitas lo que ya hemos decidido en esta sesión.
+- Si cambiamos de tarea, propone vos el /compact o una sesion nueva.
