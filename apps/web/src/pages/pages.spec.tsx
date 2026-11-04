@@ -127,6 +127,27 @@ describe('RestaurantPage', () => {
     expect(await screen.findByRole('button', { name: 'Reservar las 21:00 h' })).toBeEnabled();
   });
 
+  it('la cantidad de personas se cambia con − y +, sin pasarse del tope por mesa ni bajar de 1', async () => {
+    const server = mockApi({ 'GET /restaurants/64b7f0c2a1b2c3d4e5f60718/overview': { body: overview } });
+    const user = userEvent.setup();
+    renderApp(`/restaurantes/${RID}`);
+
+    const more = await screen.findByRole('button', { name: 'Una persona más' });
+    const less = screen.getByRole('button', { name: 'Una persona menos' });
+    const group = screen.getByRole('group', { name: 'Personas' });
+    expect(group).toHaveTextContent('2 personas');
+
+    await user.click(more);
+    await user.click(more);
+    expect(group).toHaveTextContent('4 personas');
+    expect(more).toBeDisabled(); // la mesa más grande es de 4
+    await waitFor(() => expect(server.callsTo('GET', `/restaurants/${RID}/overview`).at(-1)?.query.partySize).toBe('4'));
+
+    for (let i = 0; i < 3; i++) await user.click(less);
+    expect(group).toHaveTextContent('1 persona');
+    expect(less).toBeDisabled();
+  });
+
   it('reserva el horario elegido y lleva a pagar la seña', async () => {
     const server = mockApi({
       'GET /restaurants/64b7f0c2a1b2c3d4e5f60718/overview': { body: overview },

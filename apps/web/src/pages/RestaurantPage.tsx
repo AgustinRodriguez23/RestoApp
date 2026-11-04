@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useCreateReservation, useRestaurantOverview } from '../api/hooks';
 import type { OpeningHours } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
-import { Button, EmptyState, ErrorNotice, Field, inputClass, Spinner } from '../components/ui';
+import { Button, EmptyState, ErrorNotice, Field, inputClass, Spinner, Stepper } from '../components/ui';
 import { allergenLabel, dateInputValue, formatDay, formatMoney, formatTime } from '../lib/format';
 import { useAppDispatch, useAppSelector } from '../store';
 import { bookingActions } from '../store/bookingSlice';
@@ -42,7 +42,7 @@ export function RestaurantPage() {
 
   // El borrador puede ser de otro restaurante durante el primer render: se espera a que se asigne
   const ready = draft.restaurantId === id && draft.date !== '';
-  const { data, error, isPending, refetch, isFetching } = useRestaurantOverview(ready ? id : '', draft.date, draft.partySize);
+  const { data, error, isPending, refetch, isFetching, isPlaceholderData } = useRestaurantOverview(ready ? id : '', draft.date, draft.partySize);
   const create = useCreateReservation();
 
   if (!ready || (isPending && !data)) {
@@ -111,21 +111,18 @@ export function RestaurantPage() {
         <h2 id="reservar" className="text-2xl font-semibold">
           Reservar una mesa
         </h2>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Personas" hint={maxSeats > 0 ? `Hasta ${maxSeats} por mesa` : undefined}>
-            <input
-              className={inputClass}
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={Math.max(1, maxSeats)}
-              value={draft.partySize}
-              onChange={(e) => {
-                const value = Math.trunc(Number(e.target.value));
-                if (value >= 1 && value <= 50) dispatch(bookingActions.setPartySize(value));
-              }}
-            />
-          </Field>
+        <div className="grid items-start gap-4 sm:grid-cols-2">
+          <Stepper
+            label="Personas"
+            hint={maxSeats > 0 ? `Hasta ${maxSeats} por mesa` : undefined}
+            value={draft.partySize}
+            min={1}
+            max={Math.max(1, maxSeats)}
+            onChange={(value) => dispatch(bookingActions.setPartySize(value))}
+            format={(n) => (n === 1 ? '1 persona' : `${n} personas`)}
+            decreaseLabel="Una persona menos"
+            increaseLabel="Una persona más"
+          />
           <Field label="Día">
             <input
               className={inputClass}
@@ -142,12 +139,17 @@ export function RestaurantPage() {
           {warnings.some((w) => w.section === 'availability') && (
             <ErrorNotice error={new Error('No pudimos consultar los horarios en este momento.')} title="Horarios no disponibles" onRetry={() => void refetch()} />
           )}
-          {availability && slots.length === 0 && (
+          {isPlaceholderData && (
+            <p className="flex items-center gap-2 text-muted">
+              <Spinner small /> Buscando horarios…
+            </p>
+          )}
+          {!isPlaceholderData && availability && slots.length === 0 && (
             <EmptyState title="No hay horarios libres ese día">
               <p className="text-muted">Probá con otro día o con menos personas.</p>
             </EmptyState>
           )}
-          {slots.length > 0 && (
+          {!isPlaceholderData && slots.length > 0 && (
             <ul className="grid grid-cols-3 gap-2 sm:grid-cols-5 md:grid-cols-6">
               {slots.map((slot) => {
                 const active = slot.startsAt === draft.startsAt;

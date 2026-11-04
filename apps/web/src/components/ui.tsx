@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { useId, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { ApiError } from '../lib/api';
 
 type Variant = 'primary' | 'secondary' | 'danger' | 'ghost';
@@ -43,6 +43,54 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
       {children}
       {hint && <span className="text-xs font-normal text-muted">{hint}</span>}
     </label>
+  );
+}
+
+/**
+ * Un número chico con botones − y +, en vez de un input que se tipea. En el celular no abre el teclado ni hay que borrar
+ * nada: con <input type="number"> controlado, borrar dejaba el campo vacío, el valor se descartaba y lo tipeado se
+ * sumaba al número viejo (2 y después 4 daba 24). No usa Field porque Field es un <label>: tocar el texto apretaría el −.
+ */
+export function Stepper({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  onChange,
+  format = String,
+  decreaseLabel,
+  increaseLabel,
+}: {
+  label: string;
+  hint?: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+  format?: (value: number) => string;
+  decreaseLabel: string;
+  increaseLabel: string;
+}) {
+  const id = useId();
+  const step = 'size-11 shrink-0 rounded-lg border border-line bg-surface text-xl font-semibold text-sifon-dark hover:border-sifon disabled:text-muted disabled:hover:border-line';
+  return (
+    <div role="group" aria-labelledby={`${id}-label`} className="grid min-w-0 gap-1.5 text-sm font-medium">
+      <span id={`${id}-label`}>{label}</span>
+      <div className="flex items-center gap-2">
+        <button type="button" className={step} aria-label={decreaseLabel} disabled={value <= min} onClick={() => onChange(value - 1)}>
+          −
+        </button>
+        {/* aria-live: un lector de pantalla anuncia el número nuevo después de cada toque */}
+        <output aria-live="polite" className="flex h-11 min-w-0 flex-1 items-center justify-center rounded-lg border border-line bg-surface px-3 text-base text-ink">
+          {format(value)}
+        </output>
+        <button type="button" className={step} aria-label={increaseLabel} disabled={value >= max} onClick={() => onChange(value + 1)}>
+          +
+        </button>
+      </div>
+      {hint && <span className="text-xs font-normal text-muted">{hint}</span>}
+    </div>
   );
 }
 
