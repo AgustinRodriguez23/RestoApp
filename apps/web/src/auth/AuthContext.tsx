@@ -43,6 +43,8 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<User>;
   register: (input: { name: string; email: string; password: string }) => Promise<User>;
+  /** Pide un token con los datos actuales: el rol viaja dentro del token y cambia, por ejemplo, al aprobarse la solicitud para ser dueño. */
+  refreshSession: () => Promise<User>;
   logout: () => void;
 }
 
@@ -87,6 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await api.post('/auth/register', input);
         return start((await api.post<AuthResponse>('/auth/login', { email: input.email, password: input.password })).data);
       },
+      refreshSession: async () => start((await api.post<AuthResponse>('/auth/token')).data),
       logout,
     }),
     [session, start, logout],

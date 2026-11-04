@@ -117,6 +117,15 @@ export function ErrorNotice({ error, onRetry, title = 'No pudimos cargar esto' }
   );
 }
 
+/** El error de validación de un campo, debajo de él. */
+export function FieldError({ message }: { message?: string }) {
+  return message ? (
+    <p role="alert" className="text-sm font-medium text-danger">
+      {message}
+    </p>
+  ) : null;
+}
+
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="grid justify-items-start gap-3 rounded-xl border border-dashed border-line p-6">

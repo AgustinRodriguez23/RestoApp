@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../lib/api';
-import type { AppNotification, CreateReservationInput, NotificationsPage, DaySummary, MenuCategory, MenuItemInput, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
+import type { AppNotification, CreateReservationInput, NotificationsPage, DaySummary, MenuCategory, MenuItemInput, OwnerRequest, OwnerRequestInput, OwnerRequestStatus, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
 
 /**
  * Todo el estado que vive en el servidor pasa por React Query: caché, reintentos, "cargando" y
@@ -308,5 +308,50 @@ export function useMarkAllNotificationsRead() {
   return useMutation({
     mutationFn: () => api.post<{ updated: number }>('/notifications/read-all').then((r) => r.data),
     onSuccess: refresh,
+  });
+}
+
+/** Solicitudes para ser dueño */
+export function useMyOwnerRequest(enabled: boolean) {
+  return useQuery({
+    queryKey: ['owner-requests', 'mine'] as const,
+    // 404 no es un error acá: quiere decir que todavía no envió ninguna
+    queryFn: ({ signal }) =>
+      api.get<OwnerRequest>('/owner-requests/mine', undefined, signal).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }),
+    enabled,
+    // Si la está esperando, ve el cambio al volver a la pestaña
+    refetchOnWindowFocus: true,
+  });
+}
+
+export function useCreateOwnerRequest() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: OwnerRequestInput) => api.post<OwnerRequest>('/owner-requests', input).then((r) => r.data),
+    onSuccess: (created) => queryClient.setQueryData(['owner-requests', 'mine'], created),
+  });
+}
+
+export function useOwnerRequests(params: { status: OwnerRequestStatus; page: number }) {
+  return useQuery({
+    queryKey: ['owner-requests', 'list', params] as const,
+    queryFn: ({ signal }) => api.get<Page<OwnerRequest>>('/owner-requests', { status: params.status, page: params.page, limit: 10 }, signal),
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: true,
+  });
+}
+
+/** Aprobar o rechazar. Con o sin éxito se refresca la lista: un 409 quiere decir que otro admin ya la revisó. */
+export function useReviewOwnerRequest() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; decision: 'approve' } | { id: string; decision: 'reject'; reason: string }) =>
+      api
+        .post<OwnerRequest>(`/owner-requests/${input.id}/${input.decision}`, input.decision === 'reject' ? { reason: input.reason } : undefined)
+        .then((r) => r.data),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['owner-requests', 'list'] }),
   });
 }

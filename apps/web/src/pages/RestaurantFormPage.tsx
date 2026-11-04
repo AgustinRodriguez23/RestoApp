@@ -2,18 +2,10 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useCreateRestaurant, useDeleteRestaurant, useMyRestaurants, useUpdateRestaurant } from '../api/hooks';
 import type { Restaurant } from '../api/types';
-import { Button, ErrorNotice, Field, inputClass, Spinner } from '../components/ui';
+import { Button, ErrorNotice, Field, FieldError, inputClass, Spinner } from '../components/ui';
 import { DAYS, emptyForm, formFromRestaurant, repeatFirstShift, toInput, validate, type FormErrors, type RestaurantFormState } from '../lib/restaurantForm';
 import { useAppDispatch } from '../store';
 import { toastActions } from '../store/toastSlice';
-
-function FieldError({ message }: { message?: string }) {
-  return message ? (
-    <p role="alert" className="text-sm font-medium text-danger">
-      {message}
-    </p>
-  ) : null;
-}
 
 function RestaurantForm({ restaurant }: { restaurant?: Restaurant }) {
   const dispatch = useAppDispatch();

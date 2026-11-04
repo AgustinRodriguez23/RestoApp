@@ -3,7 +3,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: 'CUSTOMER' | 'RESTAURANT_OWNER';
+  role: 'CUSTOMER' | 'RESTAURANT_OWNER' | 'ADMIN';
 }
 
 export interface AuthResponse {
@@ -175,4 +175,27 @@ export interface AppNotification {
 /** La lista trae además cuántas hay sin leer en total (no solo en esta página). */
 export interface NotificationsPage extends Page<AppNotification> {
   unreadCount: number;
+}
+
+export type OwnerRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+/** Pedido de un cliente para ser dueño de restaurante. applicant viene solo en el listado del admin. */
+export interface OwnerRequest {
+  id: string;
+  status: OwnerRequestStatus;
+  restaurantName: string;
+  address: string;
+  phone: string;
+  message: string | null;
+  rejectionReason: string | null;
+  createdAt: string;
+  reviewedAt: string | null;
+  applicant?: { id: string; email: string; name: string };
+}
+
+export interface OwnerRequestInput {
+  restaurantName: string;
+  address: string;
+  phone: string;
+  message?: string;
 }
