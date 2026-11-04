@@ -1,9 +1,11 @@
 import { Link, Route, Routes } from 'react-router-dom';
-import { Layout, RequireAuth, RequireOwner } from './components/Layout';
+import { Layout, RequireAuth, RequireRole } from './components/Layout';
+import { AdminRequestsPage } from './pages/AdminRequestsPage';
 import { LoginPage } from './pages/LoginPage';
 import { MenuPage } from './pages/MenuPage';
 import { NotificationsPage } from './pages/NotificationsPage';
 import { OwnerPage } from './pages/OwnerPage';
+import { OwnerRequestPage } from './pages/OwnerRequestPage';
 import { PaymentPage } from './pages/PaymentPage';
 import { ReservationsPage } from './pages/ReservationsPage';
 import { RestaurantFormPage } from './pages/RestaurantFormPage';
@@ -32,11 +34,15 @@ export function App() {
           <Route path="notificaciones" element={<NotificationsPage />} />
           <Route path="reservas" element={<ReservationsPage />} />
           <Route path="reservas/:id/pagar" element={<PaymentPage />} />
-          <Route element={<RequireOwner />}>
+          <Route path="quiero-ser-dueno" element={<OwnerRequestPage />} />
+          <Route element={<RequireRole role="RESTAURANT_OWNER" />}>
             <Route path="panel" element={<OwnerPage />} />
             <Route path="panel/restaurantes/nuevo" element={<RestaurantFormPage />} />
             <Route path="panel/restaurantes/:id" element={<RestaurantFormPage />} />
             <Route path="panel/restaurantes/:id/carta" element={<MenuPage />} />
+          </Route>
+          <Route element={<RequireRole role="ADMIN" />}>
+            <Route path="admin/solicitudes" element={<AdminRequestsPage />} />
           </Route>
         </Route>
         <Route path="*" element={<NotFound />} />

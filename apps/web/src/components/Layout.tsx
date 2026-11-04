@@ -1,10 +1,12 @@
+import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useUnreadCount } from '../api/hooks';
+import type { User } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Toasts } from './Toasts';
 
 const navLink = ({ isActive }: { isActive: boolean }) =>
-  `shrink-0 whitespace-nowrap rounded-md px-2 py-2 text-sm font-semibold sm:px-3 ${isActive ? 'bg-white/15 text-white' : 'text-white/75 hover:text-white'}`;
+  `flex min-h-11 items-center whitespace-nowrap rounded-md px-3 text-sm font-semibold sm:min-h-10 ${isActive ? 'bg-white/15 text-white' : 'text-white/75 hover:text-white'}`;
 
 /** Campanita con el contador de sin leer; lleva a la bandeja. */
 function NotificationsBell() {
@@ -25,45 +27,70 @@ function NotificationsBell() {
   );
 }
 
+/**
+ * Header. En pantallas chicas los links se esconden detrás del botón de menú (las tres líneas) y se abren en una
+ * columna; desde sm se ven siempre en fila. Es una sola <nav> que cambia con clases, no dos menús: así los links
+ * existen una sola vez para los lectores de pantalla y para los tests.
+ */
 export function Layout() {
   const { user, logout } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const close = () => setMenuOpen(false);
+
+  // Escape cierra el menú y devuelve el foco al botón, para seguir con el teclado desde donde se estaba
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setMenuOpen(false);
+      menuButton.current?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [menuOpen]);
+
   return (
     <div className="grid min-h-dvh grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto]">
       <header className="bg-ink text-white">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-3">
-          <Link to="/" className="font-display text-xl font-bold tracking-tight">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+          <Link to="/" onClick={close} className="font-display text-xl font-bold tracking-tight">
             RestoApp
           </Link>
-          {/* En móvil la navegación baja a su propia fila (logo y sesión arriba) y, si no entra, se desliza de costado */}
-          <nav aria-label="Principal" className="-mx-2 order-last flex w-full gap-0.5 sm:gap-1 overflow-x-auto sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible">
-            <NavLink to="/" end className={navLink}>
-              Restaurantes
-            </NavLink>
-            {user && (
-              <NavLink to="/reservas" className={navLink}>
-                Mis reservas
-              </NavLink>
-            )}
-            {user?.role === 'RESTAURANT_OWNER' && (
-              <NavLink to="/panel" className={navLink}>
-                Panel del local
-              </NavLink>
-            )}
+          <nav
+            id="navegacion"
+            aria-label="Principal"
+            className={`${menuOpen ? 'flex' : 'hidden'} order-last w-full flex-col gap-0.5 border-t border-white/15 pt-2 sm:order-none sm:flex sm:w-auto sm:flex-row sm:gap-1 sm:border-0 sm:pt-0`}
+          >
+            <NavLinks user={user} onNavigate={close} />
           </nav>
           <div className="ml-auto flex min-w-0 items-center gap-1 text-sm sm:gap-3">
             {user ? (
               <>
                 <NotificationsBell />
-                <span className="max-w-[9rem] truncate text-white/80 sm:max-w-[16rem]">{user.name}</span>
-                <button type="button" onClick={logout} className="rounded-md px-3 py-2 font-semibold text-white/90 hover:bg-white/15">
+                <span className="hidden max-w-[16rem] truncate text-white/80 sm:inline">{user.name}</span>
+                <button type="button" onClick={logout} className="min-h-10 rounded-md px-3 font-semibold text-white/90 hover:bg-white/15">
                   Salir
                 </button>
               </>
             ) : (
-              <Link to="/ingresar" className="rounded-md bg-white px-3 py-2 font-semibold text-ink hover:bg-sifon-soft">
+              <Link to="/ingresar" onClick={close} className="rounded-md bg-white px-3 py-2 font-semibold text-ink hover:bg-sifon-soft">
                 Ingresar
               </Link>
             )}
+            <button
+              ref={menuButton}
+              type="button"
+              aria-expanded={menuOpen}
+              aria-controls="navegacion"
+              aria-label={menuOpen ? 'Cerrar menú' : 'Abrir menú'}
+              onClick={() => setMenuOpen((open) => !open)}
+              className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-md hover:bg-white/15 sm:hidden"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-6 w-6 fill-none stroke-current" strokeWidth="2" strokeLinecap="round">
+                {menuOpen ? <path d="M6 6l12 12M18 6L6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
+              </svg>
+            </button>
           </div>
         </div>
       </header>
@@ -76,6 +103,37 @@ export function Layout() {
   );
 }
 
+/** Los links según quién entró. Tocar uno cierra el menú en el celular. */
+function NavLinks({ user, onNavigate }: { user: User | null; onNavigate: () => void }) {
+  return (
+    <>
+      <NavLink to="/" end className={navLink} onClick={onNavigate}>
+        Restaurantes
+      </NavLink>
+      {user && (
+        <NavLink to="/reservas" className={navLink} onClick={onNavigate}>
+          Mis reservas
+        </NavLink>
+      )}
+      {user?.role === 'RESTAURANT_OWNER' && (
+        <NavLink to="/panel" className={navLink} onClick={onNavigate}>
+          Panel del local
+        </NavLink>
+      )}
+      {user?.role === 'ADMIN' && (
+        <NavLink to="/admin/solicitudes" className={navLink} onClick={onNavigate}>
+          Solicitudes
+        </NavLink>
+      )}
+      {user?.role === 'CUSTOMER' && (
+        <NavLink to="/quiero-ser-dueno" className={navLink} onClick={onNavigate}>
+          Quiero ser dueño
+        </NavLink>
+      )}
+    </>
+  );
+}
+
 /** Rutas que piden sesión: si no hay, se va al login y después se vuelve a donde se quería ir. */
 export function RequireAuth() {
   const { isAuthenticated } = useAuth();
@@ -84,9 +142,9 @@ export function RequireAuth() {
   return <Outlet />;
 }
 
-/** Rutas del panel del dueño. El rol se vuelve a validar en el servidor: esto solo evita mostrar una pantalla que va a fallar. */
-export function RequireOwner() {
+/** Rutas de un rol (panel del dueño, solicitudes del admin). El servidor lo vuelve a validar: esto solo evita mostrar una pantalla que va a fallar. */
+export function RequireRole({ role }: { role: User['role'] }) {
   const { user } = useAuth();
-  if (user?.role !== 'RESTAURANT_OWNER') return <Navigate to="/" replace />;
+  if (user?.role !== role) return <Navigate to="/" replace />;
   return <Outlet />;
 }
