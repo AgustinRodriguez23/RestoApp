@@ -33,6 +33,9 @@ export function useRestaurantOverview(id: string, date: string, partySize: numbe
     enabled: id !== '' && date !== '',
     staleTime: 15_000,
     refetchOnWindowFocus: true,
+    // Al cambiar personas o día se sigue viendo la página mientras llegan los horarios nuevos (si no, cada toque volvía
+    // a "Cargando el restaurante…"). Solo dentro del mismo restaurante: nunca se muestra uno mientras carga otro.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === id ? previous : undefined),
   });
 }
 
