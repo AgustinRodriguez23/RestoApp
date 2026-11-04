@@ -2,7 +2,7 @@
 
 Documentación técnica completa, fase por fase: qué se hizo, por qué, cómo se probó y qué quedó pendiente. El resumen del proyecto está en el [README](../README.md).
 
-> Estado: **Fases 1 a 9 completas** (la 8, de performance, con mediciones del front y del backend), el **panel del dueño** y el **deploy** en https://restoapp.duckdns.org. Quedan los pendientes de la hoja de ruta.
+> Estado: **Fases 1 a 9 completas** (la 8, de performance, con mediciones del front y del backend), el **panel del dueño**, la **solicitud para ser dueño** y el **deploy** en https://restoapp.duckdns.org. Quedan los pendientes de la hoja de ruta.
 
 ## Arquitectura objetivo
 
@@ -141,6 +141,8 @@ npm run up                         # o los servicios con dev:* + infra:up
 npm run test:e2e                   # E2E_EXPIRY=1 agrega el vencimiento (tarda más)
 ```
 
+También recorre la solicitud para ser dueño. Para eso crea un admin con `docker compose exec` sobre `postgres-auth`, igual que en producción, así que necesita las bases del `docker-compose.yml` del repo.
+
 ## Decisiones de diseño (todos los servicios)
 
 - **Una base de datos por servicio**: ningún servicio lee la base de otro.
@@ -198,14 +200,33 @@ Los scripts usan `src/data-source.ts`, que arma la misma conexión que la app a 
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| POST | `/auth/register` | Registra un usuario y devuelve un JWT. Es `CUSTOMER` salvo que se pida `RESTAURANT_OWNER` y esté activado `ALLOW_OWNER_SELF_REGISTER` (si no, 403: el registro es público y cualquiera se haría dueño) |
+| POST | `/auth/register` | Registra un usuario y devuelve un JWT. Es `CUSTOMER` salvo que se pida `RESTAURANT_OWNER` y esté activado `ALLOW_OWNER_SELF_REGISTER` (si no, 403: el registro es público y cualquiera se haría dueño). `ADMIN` no se acepta nunca (400) |
 | POST | `/auth/login` | Valida credenciales y devuelve un JWT |
+| POST | `/auth/token` | Devuelve un token con el rol **actual** de la base y el **mismo vencimiento** que el que se mandó |
 | GET | `/auth/me` | Datos del usuario autenticado (`Authorization: Bearer <token>`) |
+| POST | `/owner-requests` | Cliente: pide ser dueño (nombre del local, dirección, teléfono, mensaje opcional) |
+| GET | `/owner-requests/mine` | La última solicitud del usuario con su estado (404 si nunca pidió) |
+| GET | `/owner-requests` | Admin: solicitudes por estado (`status`, `page`, `limit`), con quién la envió |
+| POST | `/owner-requests/:id/approve` | Admin: aprueba; el usuario pasa a `RESTAURANT_OWNER` |
+| POST | `/owner-requests/:id/reject` | Admin: rechaza con un motivo (`reason`) que ve el usuario |
 | GET | `/health` | Estado del servicio y de su base de datos |
 
 - Contraseñas con bcrypt; el hash nunca sale en la API (`select: false` en la entidad).
 - Mismo error **y mismo tiempo** para email inexistente y contraseña incorrecta, para no revelar qué emails están registrados: si el email no existe se compara igual contra un hash de relleno del mismo costo, así el bcrypt (lo más caro del pedido) se paga siempre.
 - Email repetido: 409. Si dos registros con el mismo email llegan a la vez y los dos pasan el chequeo previo, el índice único de la base deja entrar a uno y el otro recibe el mismo 409 (no un 500).
+
+### Solicitud para ser dueño
+
+Un cliente pide ser dueño y un admin lo aprueba o lo rechaza con un motivo. Con esto `ALLOW_OWNER_SELF_REGISTER` queda en `false` en producción.
+
+- **El admin se crea a mano** con un `UPDATE` en la base ([OPERACION.md](./OPERACION.md#crear-un-admin)). El registro acepta solo una lista explícita de roles (`SELF_REGISTER_ROLES`, con `@IsIn`), en auth y en el BFF: con `@IsEnum(Role)`, sumar `ADMIN` al enum lo habría vuelto pedible desde afuera.
+- **Una sola pendiente por usuario**, con un índice único parcial (`WHERE status = 'PENDING'`). Dos envíos simultáneos no pasan los dos: el segundo choca con el índice y recibe 409. Después de un rechazo se puede volver a pedir.
+- **Aprobar es una sola transacción**: la solicitud pasa a aprobada y el usuario a `RESTAURANT_OWNER`, o no pasa ninguna de las dos. La revisión es un `UPDATE ... WHERE status = 'PENDING'`: si dos admins la revisan a la vez, el segundo actualiza 0 filas y recibe 409.
+- **El rol se mira en la base, no en el token.** Un recién aprobado todavía tiene un token que dice `CUSTOMER`; si pidiera de nuevo, el guard lo dejaría pasar, pero el servicio ve que ya es dueño y responde 403.
+- **Renovar el token en vez de cerrar sesión.** El rol viaja en el JWT, así que al aprobarse el usuario no ve el panel hasta tener uno nuevo. `POST /auth/token` lo reemite con el rol de la base y el mismo `exp`: renovar no alarga la sesión, así que un token robado no se puede estirar para siempre. El front lo pide solo, una vez, cuando ve la solicitud aprobada.
+- La migración agrega el valor con `ALTER TYPE ... ADD VALUE IF NOT EXISTS 'ADMIN'`. Postgres no permite quitar un valor de un enum: el `down` vuelve a los admins clientes, crea otro tipo sin `ADMIN` y cambia la columna a ese tipo.
+
+**Limitación conocida:** el aviso de aprobado o rechazado todavía no llega a la campanita. El usuario lo ve al entrar a «Quiero ser dueño». Para que llegue hace falta que auth-service publique eventos (outbox y RabbitMQ, como reservations y payments).
 
 ## restaurants-service
 
@@ -279,6 +300,9 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 |---|---|---|
 | POST | `/auth/register`, `/auth/login` | Reenvían a auth-service, con **límite de intentos** (429, ver abajo) |
 | GET | `/auth/me` | Perfil del usuario |
+| POST | `/auth/token` | Token con el rol actual y el mismo vencimiento (después de aprobarse la solicitud para ser dueño) |
+| POST, GET | `/owner-requests`, `/owner-requests/mine` | Pedir ser dueño / ver la propia. **Admin**: `GET /owner-requests` lista por estado |
+| POST | `/owner-requests/:id/approve`, `/owner-requests/:id/reject` | **Admin**: aprobar o rechazar con motivo |
 | GET | `/restaurants` | Listado con búsqueda y filtros |
 | GET | `/restaurants/:id/overview` | **Agregada**: restaurante + carta + (con `?date=&partySize=`) horarios libres |
 | POST | `/reservations` | Crea la reserva; la respuesta incluye el nombre del restaurante |
