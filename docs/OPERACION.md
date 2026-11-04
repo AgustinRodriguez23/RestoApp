@@ -101,6 +101,29 @@ echo 'ALTER USER :"u" PASSWORD :'"'"'p'"'"';' | docker compose exec -T postgres-
 docker compose up -d auth-service
 ```
 
+## Crear un admin
+
+El admin es quien aprueba o rechaza las solicitudes para ser dueño (pantalla «Solicitudes»). La app no tiene forma de crearlo, a propósito: si el registro aceptara `ADMIN`, cualquiera podría pedirlo. Se hace desde la base.
+
+1. Registrarse en la app con una **cuenta aparte**. Cada usuario tiene un solo rol: si se convierte la cuenta de un dueño, pierde el panel de sus restaurantes.
+2. En el servidor, abrir la consola de la base de auth. Usa el usuario y la base que ya tiene el contenedor, así no hace falta abrir el `.env`:
+
+```bash
+docker compose exec postgres-auth sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+3. Adentro de `psql` (sale con `\q`):
+
+```sql
+UPDATE users SET role = 'ADMIN' WHERE email = 'el-mail-del-admin@ejemplo.com';
+```
+
+Tiene que responder `UPDATE 1`. Con `UPDATE 0`, el email no coincide con ninguna cuenta.
+
+4. En la app, **cerrar sesión y volver a entrar**: el rol viaja dentro del token, y el que se tenía es de antes del cambio.
+
+Para sacarle el rol, lo mismo con `role = 'CUSTOMER'`. El e2e crea su admin de esta misma forma, así que el procedimiento queda probado en cada PR.
+
 ## Backups
 
 Las bases son contenedores con sus datos en volúmenes de Docker en el disco del servidor. Si el disco se rompe o se borra un volumen, se pierden: no hay nadie más guardando una copia.

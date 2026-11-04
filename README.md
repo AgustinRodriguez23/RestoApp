@@ -21,12 +21,17 @@ Por dentro es un sistema de **microservicios** con NestJS que se coordinan por e
 - **Pagar la seña**: la mesa queda retenida 15 minutos mientras tanto. Si el pago se rechaza o no se completa a tiempo, la reserva se cancela y la mesa vuelve a estar disponible.
 - **Mis reservas**: ver el estado de cada una, pagar las pendientes y cancelar. Cancelando con más de 24 horas de anticipación, la seña se devuelve.
 - **Notificaciones**: una bandeja que se llena sola cuando la reserva se confirma, vence, o se cancela por un pago rechazado o porque la canceló el restaurante.
+- **Pedir ser dueño**: se mandan los datos del local y, cuando un administrador lo aprueba, aparece el panel del dueño sin cerrar sesión.
 
 **Como dueño de un restaurante**
 
 - **Gestionar sus locales**: crear, editar y eliminar restaurantes, con sus mesas y horarios.
 - **Armar la carta**: agregar, editar, pausar y quitar platos.
 - **Ver las reservas del local**, con un resumen del día por estado, marcar si el cliente vino o no y cancelar (en ese caso la seña se devuelve siempre).
+
+**Como administrador**
+
+- **Revisar las solicitudes para ser dueño**: aprobarlas o rechazarlas con un motivo, que le llega al cliente.
 
 ---
 
@@ -59,7 +64,7 @@ Navegador ──▶ Caddy (HTTPS) ──▶ nginx (front) ──▶ web-bff ─�
 
 | Servicio | Qué hace |
 |---|---|
-| `auth-service` | Registro, login, JWT y roles (cliente y dueño) |
+| `auth-service` | Registro, login, JWT, roles (cliente, dueño y admin) y solicitudes para ser dueño |
 | `restaurants-service` | Restaurantes, mesas, horarios y carta, con caché en Redis |
 | `reservations-service` | Disponibilidad, reservas, seña y vencimiento |
 | `payments-service` | Cobro de la seña, webhooks de la pasarela y reembolsos |
@@ -95,7 +100,7 @@ Ningún servicio llama a otro para esto: si `payments-service` se cae un rato, l
 
 ### Calidad y CI/CD
 
-- **En cada pull request** corren lint, los tests unitarios de los 7 paquetes, los de integración contra PostgreSQL, RabbitMQ y Redis reales, el build de las imágenes y una prueba de punta a punta. Esa prueba levanta el sistema completo con Docker y recorre la saga de la seña con 99 verificaciones.
+- **En cada pull request** corren lint, los tests unitarios de los 7 paquetes, los de integración contra PostgreSQL, RabbitMQ y Redis reales, el build de las imágenes y una prueba de punta a punta. Esa prueba levanta el sistema completo con Docker y recorre la saga de la seña y la solicitud para ser dueño con 120 verificaciones.
 - **Al mergear a `main`** se publican las imágenes en GitHub Container Registry, solo si el CI pasó. El servidor usa esas mismas imágenes.
 - **Dependabot** mantiene las dependencias al día.
 
@@ -132,7 +137,7 @@ El detalle de cada decisión, con las alternativas que se descartaron, las medic
 
 ### Próximos pasos
 
-- **Solicitud para ser dueño**: hoy las cuentas de dueño se crean a mano. La idea es que un cliente pida serlo y un administrador lo apruebe desde un panel.
+- **Avisar en la campanita cuando se revisa una solicitud para ser dueño**: hoy el cliente lo ve al entrar a la pantalla de la solicitud.
 - **Cobro real con Mercado Pago**: la pasarela ya está detrás de una interfaz, así que sumarla no cambia el resto del servicio.
 - **La cuenta de la mesa**: registrar lo consumido, descontar la seña y cobrar con QR.
 
