@@ -49,6 +49,11 @@ describe('solicitudes para ser dueño (integración con PostgreSQL real)', () =>
     http().post(`/owner-requests/${id}/reject`).set(auth(adminToken)).send({ reason: 'No pudimos verificar el local.' });
   const roleOf = async (userId: string) =>
     ((await ds.query(`SELECT role FROM "${SCHEMA}".users WHERE id = $1`, [userId])) as { role: string }[])[0].role;
+  /** Los avisos que quedaron en el outbox para una solicitud (sin RabbitMQ en estas pruebas, nadie los publica). */
+  const eventsOf = async (requestId: string) =>
+    (await ds.query(`SELECT type, payload FROM "${SCHEMA}".outbox_messages WHERE payload->'data'->>'requestId' = $1`, [
+      requestId,
+    ])) as { type: string; payload: { data: Record<string, unknown> } }[];
 
   beforeAll(async () => {
     const env = process.env;
@@ -61,6 +66,8 @@ describe('solicitudes para ser dueño (integración con PostgreSQL real)', () =>
       DB_PASSWORD: env.TEST_DB_PASSWORD ?? 'auth_password',
       DB_NAME: env.TEST_DB_NAME ?? 'auth_db',
       DB_SCHEMA: SCHEMA,
+      // Vacía y no ausente: si no, se leería la del .env de la raíz y el relay publicaría (y marcaría) los eventos
+      RABBITMQ_URL: '',
       NODE_ENV: 'test',
     });
 
@@ -151,6 +158,18 @@ describe('solicitudes para ser dueño (integración con PostgreSQL real)', () =>
     expect(after.exp).toBe(before.exp);
   });
 
+  it('aprobar deja el aviso en el outbox, con lo necesario para armarlo', async () => {
+    const ana = await customer();
+    const { body } = await send(ana.token);
+
+    await approve(body.id);
+
+    const events = await eventsOf(body.id);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('owner-request.approved');
+    expect(events[0].payload.data).toEqual({ requestId: body.id, userId: ana.id, restaurantName: solicitud.restaurantName });
+  });
+
   it('con el token viejo (todavía dice CUSTOMER), un dueño recién aprobado no puede volver a pedir', async () => {
     const ana = await customer();
     const { body } = await send(ana.token);
@@ -170,6 +189,10 @@ describe('solicitudes para ser dueño (integración con PostgreSQL real)', () =>
       status: string;
     }[];
     expect(await roleOf(ana.id)).toBe(row.status === 'APPROVED' ? 'RESTAURANT_OWNER' : 'CUSTOMER');
+    // Y un solo aviso, el del que ganó: el que perdió se deshizo con su transacción
+    expect((await eventsOf(body.id)).map((event) => event.type)).toEqual([
+      row.status === 'APPROVED' ? 'owner-request.approved' : 'owner-request.rejected',
+    ]);
   });
 
   it('si el usuario dejó de ser cliente, aprobar se deshace entero: la solicitud sigue pendiente', async () => {
@@ -182,6 +205,7 @@ describe('solicitudes para ser dueño (integración con PostgreSQL real)', () =>
       body.id,
     ])) as { status: string; reviewed_by: string | null }[];
     expect(row).toEqual({ status: 'PENDING', reviewed_by: null });
+    expect(await eventsOf(body.id)).toEqual([]); // no se avisa de algo que no pasó
   });
 
   it('rechazada, el usuario ve el motivo y puede volver a enviar', async () => {
@@ -192,6 +216,9 @@ describe('solicitudes para ser dueño (integración con PostgreSQL real)', () =>
     const mine = await http().get('/owner-requests/mine').set(auth(ana.token));
     expect(mine.body).toMatchObject({ status: 'REJECTED', rejectionReason: 'No pudimos verificar el local.' });
     expect(await roleOf(ana.id)).toBe('CUSTOMER');
+    const [event] = await eventsOf(body.id);
+    expect(event.type).toBe('owner-request.rejected');
+    expect(event.payload.data).toMatchObject({ userId: ana.id, reason: 'No pudimos verificar el local.' });
 
     expect((await send(ana.token)).status).toBe(201);
   });

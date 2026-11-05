@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
 import { typeOrmOptions } from './database.config';
 import { HealthController } from './health/health.controller';
+import { MessagingModule } from './messaging/messaging.module';
 import { OwnerRequestsModule } from './owner-requests/owner-requests.module';
 import { UsersModule } from './users/users.module';
 
@@ -19,6 +20,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     AuthModule,
     OwnerRequestsModule,
+    MessagingModule,
   ],
   controllers: [HealthController],
 })
