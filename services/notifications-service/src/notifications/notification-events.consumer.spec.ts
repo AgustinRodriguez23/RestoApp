@@ -35,6 +35,14 @@ describe('NotificationEventsConsumer', () => {
     );
   });
 
+  it('el aviso de una solicitud aprobada se guarda sin reserva ni restaurante', async () => {
+    notifications.createFromEvent.mockResolvedValue('created');
+    await build().handle(envelope('owner-request.approved', { requestId: 'req-1', userId: 'user-1', restaurantName: 'La Esquina' }));
+    const draft = notifications.createFromEvent.mock.calls[0][1];
+    expect(draft).toMatchObject({ userId: 'user-1', type: 'OWNER_REQUEST_APPROVED' });
+    expect(draft).not.toHaveProperty('reservationId');
+  });
+
   it('un evento ya procesado se informa como duplicado', async () => {
     notifications.createFromEvent.mockResolvedValue('duplicate');
     await expect(build().handle(envelope('reservation.confirmed', data))).resolves.toBe('duplicate');
@@ -66,6 +74,14 @@ describe('NotificationEventsConsumer', () => {
     it('el nombre de la cola lleva el prefijo del entorno (aísla entornos que comparten broker)', () => {
       expect(build({ RABBITMQ_QUEUE_PREFIX: 'e2e.' }).queueName).toBe('e2e.notifications-service.reservations');
       expect(build().queueName).toBe('notifications-service.reservations');
+      expect(build({ RABBITMQ_QUEUE_PREFIX: 'e2e.' }).ownerRequestsQueueName).toBe('e2e.notifications-service.owner-requests');
+    });
+
+    it('los eventos de las solicitudes para ser dueño van a una cola aparte, con su propia DLQ', async () => {
+      await build().onModuleInit();
+      const def = consumers.register.mock.calls[1][0];
+      expect(def.name).toBe('notifications-service.owner-requests');
+      expect(def.bindings.sort()).toEqual(['owner-request.approved', 'owner-request.rejected']);
     });
 
     it('la demora de reintento sale de RABBITMQ_RETRY_DELAY_MS', async () => {

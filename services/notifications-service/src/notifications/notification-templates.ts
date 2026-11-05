@@ -7,12 +7,16 @@ export interface NotificationDraft {
   type: NotificationType;
   title: string;
   body: string;
-  reservationId: string;
-  restaurantId: string;
+  /** Solo en los avisos de una reserva. */
+  reservationId?: string;
+  restaurantId?: string;
 }
 
-/** Tipos de evento que este servicio escucha (las routing keys de la cola). */
+/** Eventos de las reservas que este servicio escucha (las routing keys de su cola). */
 export const NOTIFIABLE_EVENTS = ['reservation.confirmed', 'reservation.cancelled', 'reservation.expired'] as const;
+
+/** Eventos de las solicitudes para ser dueño (los publica auth-service). Van a otra cola: ver NotificationEventsConsumer. */
+export const OWNER_REQUEST_EVENTS = ['owner-request.approved', 'owner-request.rejected'] as const;
 
 const DEFAULT_TIME_ZONE = 'America/Argentina/Buenos_Aires';
 
@@ -65,11 +69,13 @@ export function formatWhen(startsAt: unknown, timeZone: unknown): string | undef
 const people = (n: unknown) => (typeof n === 'number' && n > 0 ? `${n} ${n === 1 ? 'persona' : 'personas'}` : undefined);
 
 /**
- * Convierte un evento de reserva en la notificación para el cliente (o null si a esa persona no hay nada que avisarle).
+ * Convierte un evento en la notificación para el usuario (o null si a esa persona no hay nada que avisarle).
+ * Los de la solicitud para ser dueño se arman aparte (buildOwnerRequestNotification); el resto son de reservas.
  * Lanza PoisonMessageError si el evento no sirve nunca para notificar (sin cliente o sin reserva): reintentar no lo arregla,
  * así que va a la DLQ para inspeccionarlo.
  */
 export function buildNotification(envelope: EventEnvelope): NotificationDraft | null {
+  if (envelope.type.startsWith('owner-request.')) return buildOwnerRequestNotification(envelope);
   const data = (envelope.data ?? {}) as ReservationEventData;
   const userId = text(data.customerId);
   const reservationId = text(data.reservationId);
@@ -123,6 +129,45 @@ export function buildNotification(envelope: EventEnvelope): NotificationDraft | 
         title: 'Tu reserva venció',
         body: `No se pagó la seña a tiempo, así que la mesa en ${restaurant}${forWhen} se liberó. Podés reservar de nuevo cuando quieras.`,
       };
+
+    default:
+      throw new PoisonMessageError(`tipo de evento no soportado: ${envelope.type}`);
+  }
+}
+
+interface OwnerRequestEventData {
+  userId?: unknown;
+  restaurantName?: unknown;
+  reason?: unknown;
+}
+
+/** El aviso de que un admin revisó la solicitud para ser dueño. Sin userId no se sabe a quién avisar: va a la DLQ. */
+function buildOwnerRequestNotification(envelope: EventEnvelope): NotificationDraft {
+  const data = (envelope.data ?? {}) as OwnerRequestEventData;
+  const userId = text(data.userId);
+  if (!userId) throw new PoisonMessageError(`el evento ${envelope.type} no trae userId: no se sabe a quién avisar`);
+  const local = text(data.restaurantName);
+  const forLocal = local ? ` para ${local}` : '';
+
+  switch (envelope.type) {
+    case 'owner-request.approved':
+      return {
+        userId,
+        type: 'OWNER_REQUEST_APPROVED',
+        title: 'Ya sos dueño de restaurante',
+        body: `Aprobamos tu solicitud${forLocal}. Ya podés cargar tu restaurante desde el panel.`,
+      };
+
+    case 'owner-request.rejected': {
+      const reason = text(data.reason);
+      const why = reason ? ` Motivo: ${reason}${/[.!?]$/.test(reason) ? '' : '.'}` : '';
+      return {
+        userId,
+        type: 'OWNER_REQUEST_REJECTED',
+        title: 'Tu solicitud no fue aprobada',
+        body: `Revisamos tu solicitud${forLocal} y no la aprobamos.${why} Podés corregir los datos y enviarla de nuevo.`,
+      };
+    }
 
     default:
       throw new PoisonMessageError(`tipo de evento no soportado: ${envelope.type}`);

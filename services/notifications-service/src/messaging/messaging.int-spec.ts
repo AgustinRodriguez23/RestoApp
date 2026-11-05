@@ -24,6 +24,8 @@ const RABBIT_URL = process.env.RABBITMQ_TEST_URL ?? 'amqp://guest:guest@localhos
 const RUN = Math.random().toString(36).slice(2, 8);
 const PREFIX = `it.${RUN}.`;
 const QUEUE = `${PREFIX}notifications-service.reservations`;
+const OWNER_QUEUE = `${PREFIX}notifications-service.owner-requests`;
+const ALL_QUEUES = [QUEUE, OWNER_QUEUE].flatMap((q) => [q, `${q}.retry`, deadLetterQueueOf(q)]);
 
 async function waitFor<T>(fn: () => Promise<T | undefined | false> | T | undefined | false, ms = 8000): Promise<T> {
   const deadline = Date.now() + ms;
@@ -111,18 +113,19 @@ describe('notifications-service: consumo de eventos (RabbitMQ real)', () => {
     }).compile();
     await moduleRef.init();
     await moduleRef.get(EventConsumers).whenReady(QUEUE);
+    await moduleRef.get(EventConsumers).whenReady(OWNER_QUEUE);
   });
 
   afterEach(async () => {
     await moduleRef.close();
     // cola y auxiliares vacías para el próximo caso (la cola es la misma entre casos)
-    for (const q of [QUEUE, `${QUEUE}.retry`, deadLetterQueueOf(QUEUE)]) await channel.purgeQueue(q).catch(() => undefined);
+    for (const q of ALL_QUEUES) await channel.purgeQueue(q).catch(() => undefined);
   });
 
   afterAll(async () => {
     const cleaner = await probe.createChannel();
     cleaner.on('error', () => undefined);
-    for (const q of [QUEUE, `${QUEUE}.retry`, deadLetterQueueOf(QUEUE)]) await cleaner.deleteQueue(q).catch(() => undefined);
+    for (const q of ALL_QUEUES) await cleaner.deleteQueue(q).catch(() => undefined);
     await probe.close();
   });
 
@@ -216,6 +219,24 @@ describe('notifications-service: consumo de eventos (RabbitMQ real)', () => {
 
     await waitFor(() => inbox.stored.has(marker.id));
     expect(inbox.attempts).toBe(1);
+    expect(await queueDepth(deadLetterQueueOf(QUEUE))).toBe(0);
+  });
+
+  it('una solicitud aprobada (evento de auth-service) termina en un aviso para quien la envió, por su propia cola', async () => {
+    const e = event('owner-request.approved', { requestId: 'req-1', userId: 'user-1', restaurantName: 'La Esquina de Ana' });
+    publish(e.type, e);
+
+    await waitFor(() => inbox.stored.has(e.id));
+    expect(inbox.stored.get(e.id)).toMatchObject({ userId: 'user-1', type: 'OWNER_REQUEST_APPROVED', title: 'Ya sos dueño de restaurante' });
+    expect(await queueDepth(QUEUE)).toBe(0); // no pasó por la cola de reservas
+  });
+
+  it('un evento de solicitud sin userId va a la DLQ de su cola, no a la de reservas', async () => {
+    const e = event('owner-request.rejected', { requestId: 'req-1', reason: 'Falta el teléfono.' });
+    publish(e.type, e);
+
+    const message = await waitFor(async () => (await channel.get(deadLetterQueueOf(OWNER_QUEUE), { noAck: true })) || undefined);
+    expect(message.properties.headers?.[HEADER_ERROR]).toMatch(/no se sabe a quién avisar/);
     expect(await queueDepth(deadLetterQueueOf(QUEUE))).toBe(0);
   });
 });
