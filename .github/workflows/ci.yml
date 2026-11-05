@@ -71,7 +71,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # auth solo tiene el test de migraciones (no usa RabbitMQ, pero el job lo levanta igual)
+          # auth publica los avisos de las solicitudes para ser dueño (outbox → RabbitMQ)
           - service: auth-service
             db_port: 5433
             db_user: auth

@@ -121,6 +121,7 @@ services:
   auth-service:
     <<: *app
     image: ghcr.io/agustinrodriguez23/restoapp/auth-service:${IMAGE_TAG:-latest}
+    # Sin depends_on de rabbitmq, a propósito: ver docker-compose.yml
     depends_on:
       postgres-auth:
         condition: service_healthy
@@ -135,6 +136,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
       ALLOW_OWNER_SELF_REGISTER: ${ALLOW_OWNER_SELF_REGISTER:-false}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:?Definí RABBITMQ_PASSWORD en el archivo .env}@rabbitmq:5672
 
   restaurants-service:
     <<: *app

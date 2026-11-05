@@ -48,6 +48,8 @@ services:
       logging: "reservas" # Alloy solo lee los logs de los contenedores con esta etiqueta
     restart: unless-stopped
     healthcheck: *app-healthcheck
+    # Sin depends_on de rabbitmq, a propósito: el login no puede esperar al broker. Si no está, auth arranca igual,
+    # reintenta la conexión de fondo y los avisos esperan en el outbox.
     depends_on:
       postgres-auth:
         condition: service_healthy
@@ -63,6 +65,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Definí JWT_SECRET en el archivo .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
       ALLOW_OWNER_SELF_REGISTER: ${ALLOW_OWNER_SELF_REGISTER:-false}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-reservas}:${RABBITMQ_PASSWORD:-reservas_password}@rabbitmq:5672
     ports:
       - "${AUTH_PORT:-3001}:3001"
 

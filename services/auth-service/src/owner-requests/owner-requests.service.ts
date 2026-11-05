@@ -8,6 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { isUniqueViolation } from '../auth/auth.service';
+import { OutboxService } from '../messaging/outbox.service';
 import { Role } from '../users/role.enum';
 import { User } from '../users/user.entity';
 import { UsersService } from '../users/users.service';
@@ -18,6 +19,7 @@ import {
   OwnerRequestResponseDto,
 } from './dto/owner-request.dto';
 import { OwnerRequest, OwnerRequestStatus } from './owner-request.entity';
+import { OwnerRequestEvents, OwnerRequestReviewedData } from './owner-request-events';
 
 @Injectable()
 export class OwnerRequestsService {
@@ -25,6 +27,7 @@ export class OwnerRequestsService {
     @InjectRepository(OwnerRequest) private readonly repo: Repository<OwnerRequest>,
     private readonly users: UsersService,
     private readonly dataSource: DataSource,
+    private readonly outbox: OutboxService,
   ) {}
 
   async create(userId: string, dto: CreateOwnerRequestDto): Promise<OwnerRequestResponseDto> {
@@ -68,6 +71,7 @@ export class OwnerRequestsService {
   /**
    * Aprueba y convierte al usuario en dueño, en una sola transacción: o pasan las dos cosas o ninguna.
    * Por eso las solicitudes viven en auth-service, al lado de users, y no en un servicio aparte.
+   * El aviso al usuario sale por el outbox, en la misma transacción: si algo se deshace, el aviso también.
    */
   async approve(id: string, adminId: string): Promise<OwnerRequestResponseDto> {
     return this.dataSource.transaction(async (manager) => {
@@ -80,14 +84,26 @@ export class OwnerRequestsService {
         // Le cambiaron el rol a mano mientras tanto. Se deshace todo, la solicitud incluida.
         throw new ConflictException('El usuario ya no es una cuenta de cliente');
       }
+      await this.outbox.enqueue<OwnerRequestReviewedData>(manager, OwnerRequestEvents.APPROVED, {
+        requestId: request.id,
+        userId: request.userId,
+        restaurantName: request.restaurantName,
+      });
       return toResponse(request);
     });
   }
 
   async reject(id: string, adminId: string, reason: string): Promise<OwnerRequestResponseDto> {
-    return this.dataSource.transaction(async (manager) =>
-      toResponse(await this.review(manager, id, adminId, { status: OwnerRequestStatus.REJECTED, rejectionReason: reason })),
-    );
+    return this.dataSource.transaction(async (manager) => {
+      const request = await this.review(manager, id, adminId, { status: OwnerRequestStatus.REJECTED, rejectionReason: reason });
+      await this.outbox.enqueue<OwnerRequestReviewedData>(manager, OwnerRequestEvents.REJECTED, {
+        requestId: request.id,
+        userId: request.userId,
+        restaurantName: request.restaurantName,
+        reason,
+      });
+      return toResponse(request);
+    });
   }
 
   /**
