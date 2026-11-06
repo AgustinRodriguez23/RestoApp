@@ -56,6 +56,33 @@ describe('NotificationsPage', () => {
     expect(screen.getByRole('heading', { name: /Reserva vencida/ })).not.toHaveTextContent('Sin leer');
   });
 
+  it('cada aviso lleva a su pantalla: los de reservas a "Mis reservas", los de la solicitud a "Quiero ser dueño"', async () => {
+    mockApi({
+      'GET /notifications/unread-count': { body: { count: 2 } },
+      'GET /notifications': {
+        body: page(
+          [
+            notification(),
+            notification({
+              id: '64b7f0c2a1b2c3d4e5f60003',
+              type: 'OWNER_REQUEST_APPROVED',
+              title: 'Ya sos dueño de restaurante',
+              reservationId: null,
+              restaurantId: null,
+            }),
+          ],
+          2,
+        ),
+      },
+    });
+    signIn();
+    renderApp('/notificaciones');
+    const approved = (await screen.findByRole('heading', { name: /Ya sos dueño/ })).closest('li') as HTMLElement;
+    expect(within(approved).getByRole('link', { name: 'Ver mi solicitud' })).toHaveAttribute('href', '/quiero-ser-dueno');
+    const confirmed = screen.getByRole('heading', { name: /Reserva confirmada/ }).closest('li') as HTMLElement;
+    expect(within(confirmed).getByRole('link', { name: 'Ver mis reservas' })).toHaveAttribute('href', '/reservas');
+  });
+
   it('marca una como leída y refresca la lista', async () => {
     let read = false;
     const server = mockApi({

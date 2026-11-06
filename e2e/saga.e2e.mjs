@@ -528,7 +528,7 @@ async function main() {
   // ------------------------------------------------------------------ 14
   // Un cliente pide ser dueño, un admin lo revisa y, con el token renovado, ya puede cargar su restaurante
   if (!process.env.E2E_RESTAURANT_ID) {
-    section('14. Solicitud para ser dueño: pedir, rechazar, aprobar y renovar el token');
+    section('14. Solicitud para ser dueño: pedir, rechazar, aprobar, avisar y renovar el token');
     const requests = `${BFF}/owner-requests`;
     const applicant = await register('CUSTOMER', 'aspirante');
     const adminEmail = `e2e-admin-${RUN}@example.com`;
@@ -560,12 +560,18 @@ async function main() {
     check('el admin la rechaza con motivo', rejected.status === 200 && rejected.body.status === 'REJECTED', `${rejected.status} ${JSON.stringify(rejected.body)}`);
     const mine = (await http('GET', `${requests}/mine`, { token: applicant })).body;
     check('el cliente ve el rechazo y el motivo', mine?.status === 'REJECTED' && mine.rejectionReason === 'Falta el teléfono del local.', JSON.stringify(mine));
+    // auth → outbox → RabbitMQ → notifications: el aviso llega solo a la bandeja, sin que nadie llame a nadie por HTTP
+    const notice = (type) => async () => (await http('GET', `${BFF}/notifications`, { token: applicant })).body?.data?.find((n) => n.type === type);
+    const rejectedNote = await waitFor('aviso de solicitud rechazada', notice('OWNER_REQUEST_REJECTED'));
+    check('el rechazo le llega a la campanita, con el motivo', rejectedNote.body.includes('Falta el teléfono del local.') && rejectedNote.reservationId === null, JSON.stringify(rejectedNote));
 
     const second = await http('POST', requests, { token: applicant, body: { ...input, phone: '+54 11 4444-0000' } });
     check('después de un rechazo puede volver a pedir (201)', second.status === 201 && second.body.status === 'PENDING', String(second.status));
     const approved = await http('POST', `${requests}/${second.body.id}/approve`, { token: admin });
     check('el admin la aprueba', approved.status === 200 && approved.body.status === 'APPROVED', `${approved.status} ${JSON.stringify(approved.body)}`);
     check('revisarla de nuevo da 409', (await http('POST', `${requests}/${second.body.id}/reject`, { token: admin, body: { reason: 'Me arrepentí.' } })).status === 409);
+    const approvedNote = await waitFor('aviso de solicitud aprobada', notice('OWNER_REQUEST_APPROVED'));
+    check('la aprobación le llega a la campanita', approvedNote.title === 'Ya sos dueño de restaurante', JSON.stringify(approvedNote));
 
     // El token viejo todavía dice CUSTOMER: el BFF lo frena, y auth-service mira el rol en la base, no en el token.
     // El cuerpo tiene que ser válido: el BFF valida antes de mirar el rol, y con uno vacío respondería 400

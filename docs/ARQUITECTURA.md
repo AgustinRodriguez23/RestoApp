@@ -31,7 +31,7 @@ Documentación técnica completa, fase por fase: qué se hizo, por qué, cómo s
 | `restaurants-service` | Restaurantes, mesas, horarios y carta | MongoDB | 3002 | ✅ Fase 2 |
 | `reservations-service` | Reservas, disponibilidad, estados, seña y vencimiento | PostgreSQL | 3003 | ✅ Fase 3 y 6 |
 | `payments-service` | Seña y cobro, idempotencia, webhooks, reembolsos | PostgreSQL | 3004 | ✅ Fase 6 |
-| `notifications-service` | Consume eventos de reservas y arma la bandeja de avisos del cliente | MongoDB | 3005 | ✅ Notificaciones |
+| `notifications-service` | Consume eventos de reservas y de las solicitudes para ser dueño, y arma la bandeja de avisos | MongoDB | 3005 | ✅ Notificaciones |
 | `web-bff` | Entrada única del frontend, agrega datos | — | 3000 | ✅ Fase 4 |
 | `web` (`apps/web`) | Frontend React: buscar, reservar, pagar la seña | — | 5173 | ✅ Fase 7 |
 | `redis` | Caché de lecturas de `restaurants-service` | — | 6379 | ✅ Fase 8 |
@@ -226,7 +226,8 @@ Un cliente pide ser dueño y un admin lo aprueba o lo rechaza con un motivo. Con
 - **Renovar el token en vez de cerrar sesión.** El rol viaja en el JWT, así que al aprobarse el usuario no ve el panel hasta tener uno nuevo. `POST /auth/token` lo reemite con el rol de la base y el mismo `exp`: renovar no alarga la sesión, así que un token robado no se puede estirar para siempre. El front lo pide solo, una vez, cuando ve la solicitud aprobada.
 - La migración agrega el valor con `ALTER TYPE ... ADD VALUE IF NOT EXISTS 'ADMIN'`. Postgres no permite quitar un valor de un enum: el `down` vuelve a los admins clientes, crea otro tipo sin `ADMIN` y cambia la columna a ese tipo.
 
-**Limitación conocida:** el aviso de aprobado o rechazado todavía no llega a la campanita. El usuario lo ve al entrar a «Quiero ser dueño». Para que llegue hace falta que auth-service publique eventos (outbox y RabbitMQ, como reservations y payments).
+- **El aviso llega a la campanita por eventos.** Aprobar y rechazar dejan `owner-request.approved` o `owner-request.rejected` en un outbox, en la misma transacción: si la aprobación se deshace, no se avisa nada. notifications-service los escucha (ver «Notificaciones»). auth-service solo publica, así que su mensajería no tiene consumidores ni `processed_messages`.
+- **auth no espera a RabbitMQ para arrancar** (no tiene `depends_on` del broker): el login es más importante que un aviso. Si el broker no está, los eventos esperan en el outbox y `/health` lo informa en `messaging`.
 
 ## restaurants-service
 
@@ -390,7 +391,7 @@ Con `npm run up` (la seña por defecto es $2.000 por persona), en el Swagger del
 5. Cancelá una reserva pagada: si faltan más de `REFUND_CUTOFF_HOURS` el pago pasa a `REFUNDED`; si no, la seña se pierde (si cancela el dueño del restaurante, siempre se devuelve).
 6. Mirá los mensajes en el panel de RabbitMQ (http://localhost:15672) y el recorrido completo en Grafana buscando el `correlationId` de la reserva.
 
-### Mensajería confiable (`src/messaging`, igual en reservations y payments)
+### Mensajería confiable (`src/messaging`, igual en reservations y payments; auth tiene solo la parte de publicar)
 
 | Problema | Solución |
 |---|---|
@@ -765,12 +766,17 @@ Cuando una reserva cambia de estado por algo que el cliente **no hizo él mismo*
 | `reservation.cancelled` por **el restaurante** | «El restaurante canceló tu reserva» (y si la seña se devuelve o no) |
 | `reservation.expired` | «Tu reserva venció» |
 | `reservation.cancelled` por el propio cliente | *(nada: lo hizo él)* |
+| `owner-request.approved` (de auth) | «Ya sos dueño de restaurante», con link a «Quiero ser dueño», que renueva el token |
+| `owner-request.rejected` (de auth) | «Tu solicitud no fue aprobada», con el motivo |
 
 ```
-reservations ──(outbox)──▶ RabbitMQ ──reservas.events──▶ notifications ──▶ MongoDB (bandeja)
-                                                              ▲
+reservations ──(outbox)──┐
+                         ├──▶ RabbitMQ ──reservas.events──▶ notifications ──▶ MongoDB (bandeja)
+auth ────────(outbox)────┘                                        ▲
  React ──GET /notifications, PATCH /:id/read, POST /read-all──▶ BFF ──▶ ┘   (todo filtrado por el `sub` del JWT)
 ```
+
+Cada origen tiene su cola (`notifications-service.reservations` y `notifications-service.owner-requests`) con el mismo handler: así cada una tiene sus reintentos y su DLQ, y un evento roto de un lado no se mezcla con los del otro. En los avisos de la solicitud, `reservationId` y `restaurantId` son `null`; pasaron a opcionales sin migrar nada, porque Mongo no tiene esquema fijo.
 
 ### Decisiones que vale la pena mirar
 
@@ -788,7 +794,7 @@ reservations ──(outbox)──▶ RabbitMQ ──reservas.events──▶ not
 - Integración contra **RabbitMQ real** (9): evento → notificación, duplicados, reintento ante fallo transitorio, DLQ con el motivo y eventos que no le interesan al servicio.
 - Verificaciones de que los tests detectan regresiones (rompiendo a propósito la idempotencia y el filtro por usuario).
 - Frontend: 8 tests nuevos (campanita, lista, marcar una/todas, filtro, error) y revisión visual a 320, 390 y 1280 px.
-- Punta a punta (`e2e/saga.e2e.mjs`, sección 12): pago aprobado, rechazado, cancelación del dueño y cancelación propia contra el sistema completo.
+- Punta a punta (`e2e/saga.e2e.mjs`, sección 12): pago aprobado, rechazado, cancelación del dueño y cancelación propia contra el sistema completo. La sección 14 prueba los avisos de la solicitud para ser dueño, de auth a la bandeja.
 
 ### Limitaciones conocidas
 

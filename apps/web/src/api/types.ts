@@ -158,15 +158,22 @@ export interface CreateReservationInput {
   notes?: string;
 }
 
-export type NotificationType = 'RESERVATION_CONFIRMED' | 'RESERVATION_CANCELLED_BY_RESTAURANT' | 'RESERVATION_PAYMENT_FAILED' | 'RESERVATION_EXPIRED';
+export type NotificationType =
+  | 'RESERVATION_CONFIRMED'
+  | 'RESERVATION_CANCELLED_BY_RESTAURANT'
+  | 'RESERVATION_PAYMENT_FAILED'
+  | 'RESERVATION_EXPIRED'
+  | 'OWNER_REQUEST_APPROVED'
+  | 'OWNER_REQUEST_REJECTED';
 
 export interface AppNotification {
   id: string;
   type: NotificationType;
   title: string;
   body: string;
-  reservationId: string;
-  restaurantId: string;
+  /** null en los avisos que no son de una reserva (la solicitud para ser dueño). */
+  reservationId: string | null;
+  restaurantId: string | null;
   read: boolean;
   readAt: string | null;
   createdAt: string;
