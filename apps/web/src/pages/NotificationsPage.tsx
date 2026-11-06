@@ -5,9 +5,18 @@ import type { AppNotification } from '../api/types';
 import { Button, EmptyState, ErrorNotice, Spinner } from '../components/ui';
 import { formatDay, formatTime } from '../lib/format';
 
+/**
+ * A dónde lleva cada aviso. Los de la solicitud van a «Quiero ser dueño» y no al panel: con el token de antes de la
+ * aprobación el panel todavía no se abre, y esa pantalla es la que pide el token nuevo.
+ */
+function destination(type: AppNotification['type']) {
+  return type.startsWith('OWNER_REQUEST_') ? { to: '/quiero-ser-dueno', label: 'Ver mi solicitud' } : { to: '/reservas', label: 'Ver mis reservas' };
+}
+
 function NotificationItem({ notification }: { notification: AppNotification }) {
   const markRead = useMarkNotificationRead();
   const created = notification.createdAt;
+  const link = destination(notification.type);
   return (
     <li className={`grid gap-1 rounded-xl border p-4 ${notification.read ? 'border-line bg-surface' : 'border-sifon bg-sifon-soft'}`}>
       <div className="flex flex-col gap-0.5 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
@@ -21,8 +30,8 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
       </div>
       <p className="text-sm">{notification.body}</p>
       <div className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
-        <Link to="/reservas" className="font-semibold text-sifon-dark underline">
-          Ver mis reservas
+        <Link to={link.to} className="font-semibold text-sifon-dark underline">
+          {link.label}
         </Link>
         {!notification.read && (
           <Button variant="ghost" className="min-h-10 !px-0 underline hover:bg-transparent" busy={markRead.isPending} onClick={() => markRead.mutate(notification.id)}>
