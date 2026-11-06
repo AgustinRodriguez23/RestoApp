@@ -150,4 +150,44 @@ describe('buildNotification', () => {
       expect(() => buildNotification(envelope('payment.succeeded', base))).toThrow(PoisonMessageError);
     });
   });
+
+  describe('solicitud para ser dueño', () => {
+    const request = { requestId: 'req-1', userId: 'user-1', restaurantName: 'La Esquina de Ana' };
+
+    it('aprobada: avisa con el nombre del local, sin reserva ni restaurante asociados', () => {
+      expect(buildNotification(envelope('owner-request.approved', request))).toEqual({
+        userId: 'user-1',
+        type: 'OWNER_REQUEST_APPROVED',
+        title: 'Ya sos dueño de restaurante',
+        body: 'Aprobamos tu solicitud para La Esquina de Ana. Ya podés cargar tu restaurante desde el panel.',
+      });
+    });
+
+    it('rechazada: incluye el motivo y dice que puede volver a enviarla', () => {
+      const draft = buildNotification(envelope('owner-request.rejected', { ...request, reason: 'Falta el teléfono del local' }));
+      expect(draft).toMatchObject({ userId: 'user-1', type: 'OWNER_REQUEST_REJECTED', title: 'Tu solicitud no fue aprobada' });
+      expect(draft?.body).toBe(
+        'Revisamos tu solicitud para La Esquina de Ana y no la aprobamos. Motivo: Falta el teléfono del local. Podés corregir los datos y enviarla de nuevo.',
+      );
+    });
+
+    it('un motivo que ya termina en punto no queda con dos', () => {
+      const draft = buildNotification(envelope('owner-request.rejected', { ...request, reason: 'No pudimos verificar el local.' }));
+      expect(draft?.body).toContain('Motivo: No pudimos verificar el local. Podés');
+    });
+
+    it('sin nombre del local ni motivo, el mensaje se arma igual', () => {
+      expect(buildNotification(envelope('owner-request.rejected', { userId: 'user-1' }))?.body).toBe(
+        'Revisamos tu solicitud y no la aprobamos. Podés corregir los datos y enviarla de nuevo.',
+      );
+    });
+
+    it('sin userId va a la DLQ: no se sabe a quién avisar', () => {
+      expect(() => buildNotification(envelope('owner-request.approved', { ...request, userId: undefined }))).toThrow(PoisonMessageError);
+    });
+
+    it('un tipo de la familia que no existe también es venenoso', () => {
+      expect(() => buildNotification(envelope('owner-request.created', request))).toThrow(PoisonMessageError);
+    });
+  });
 });

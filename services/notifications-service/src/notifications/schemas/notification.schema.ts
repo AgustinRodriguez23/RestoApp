@@ -7,6 +7,8 @@ export const NOTIFICATION_TYPES = [
   'RESERVATION_CANCELLED_BY_RESTAURANT',
   'RESERVATION_PAYMENT_FAILED',
   'RESERVATION_EXPIRED',
+  'OWNER_REQUEST_APPROVED',
+  'OWNER_REQUEST_REJECTED',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -35,11 +37,15 @@ export class Notification {
   @Prop({ required: true })
   body: string;
 
-  @Prop({ required: true })
-  reservationId: string;
+  /**
+   * De qué reserva y restaurante habla. null en los avisos que no son de una reserva (la solicitud para ser dueño).
+   * Pasaron a opcionales sin migrar nada: Mongo no tiene esquema fijo y las notificaciones viejas los siguen teniendo.
+   */
+  @Prop({ type: String, default: null })
+  reservationId: string | null;
 
-  @Prop({ required: true })
-  restaurantId: string;
+  @Prop({ type: String, default: null })
+  restaurantId: string | null;
 
   @Prop({ required: true, default: false })
   read: boolean;
