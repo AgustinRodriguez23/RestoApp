@@ -84,11 +84,13 @@ services:
       - mongo-restaurants-data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      # mongosh es una app de Node: el ping tarda ~1 s en reposo y más de 10 s con la máquina cargada
-      # (arrancando todo a la vez), aunque Mongo ya esté listo. Con 5 s el chequeo fallaba solo.
+      # mongosh es una app de Node: cada chequeo cuesta ~1 s de CPU. Cada 5 s se comía ~20 % de un núcleo por Mongo
+      # sin hacer nada; cada 30 s alcanza (después del arranque el chequeo solo informa, Docker no reinicia por unhealthy)
+      interval: 30s
+      # El ping tarda ~1 s en reposo y más de 10 s con la máquina cargada (arrancando todo a la vez), aunque Mongo ya
+      # esté listo. Con 5 s el chequeo fallaba solo.
       timeout: 20s
-      retries: 10
+      retries: 3
       start_period: 2m
       start_interval: 3s
 
@@ -216,10 +218,11 @@ services:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      # Igual que mongosh: la CLI de Erlang es pesada (~1,2 s en reposo) y bajo carga se pasa de 10 s
+      # Igual que mongosh: la CLI de Erlang es pesada (~1,2 s en reposo) y bajo carga se pasa de 10 s.
+      # Por eso también se chequea cada 30 s y no más seguido.
+      interval: 30s
       timeout: 20s
-      retries: 10
+      retries: 3
       start_period: 2m
       start_interval: 3s
 
@@ -293,11 +296,13 @@ services:
       - mongo-notifications-data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      # mongosh es una app de Node: el ping tarda ~1 s en reposo y más de 10 s con la máquina cargada
-      # (arrancando todo a la vez), aunque Mongo ya esté listo. Con 5 s el chequeo fallaba solo.
+      # mongosh es una app de Node: cada chequeo cuesta ~1 s de CPU. Cada 5 s se comía ~20 % de un núcleo por Mongo
+      # sin hacer nada; cada 30 s alcanza (después del arranque el chequeo solo informa, Docker no reinicia por unhealthy)
+      interval: 30s
+      # El ping tarda ~1 s en reposo y más de 10 s con la máquina cargada (arrancando todo a la vez), aunque Mongo ya
+      # esté listo. Con 5 s el chequeo fallaba solo.
       timeout: 20s
-      retries: 10
+      retries: 3
       start_period: 2m
       start_interval: 3s
 
