@@ -30,8 +30,18 @@ describe('accessLogMiddleware', () => {
   });
   afterAll(() => Logger.overrideLogger(false));
 
+  /**
+   * Espera a que haya `count` líneas de log. El middleware escribe en el 'finish' del servidor, y el cliente puede
+   * recibir la respuesta antes de que ese evento ocurra (más con la máquina cargada, como en el CI): leer `lines`
+   * apenas termina el `await request(...)` hacía que el test fallara de a ratos.
+   */
+  async function logged(count = 1): Promise<void> {
+    for (let i = 0; i < 200 && lines.length < count; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
   it('registra método, ruta, status, duración y correlationId al terminar', async () => {
     await request(app).get('/ok').set('x-correlation-id', 'trace-12345678');
+    await logged();
 
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({
@@ -49,18 +59,21 @@ describe('accessLogMiddleware', () => {
   it('4xx es warn y 5xx es error', async () => {
     await request(app).get('/missing');
     await request(app).get('/boom');
+    await logged(2);
 
     expect(lines.map((l) => [l.level, l.status])).toEqual([['warn', 404], ['error', 500]]);
   });
 
   it('incluye el userId que completó el guard durante la request', async () => {
     await request(app).get('/mine');
+    await logged();
 
     expect(lines[0]).toMatchObject({ userId: 'user-42' });
   });
 
   it('NO registra query string, body ni headers (pueden tener secretos)', async () => {
     await request(app).post('/login?token=abc123&email=a@b.com').set('Authorization', 'Bearer eyJsecreto').send({ password: 'Password123' });
+    await logged();
 
     const text = JSON.stringify(lines);
     expect(lines[0]).toMatchObject({ path: '/login' });
@@ -69,12 +82,14 @@ describe('accessLogMiddleware', () => {
 
   it('el health check queda en nivel debug (no ensucia los logs normales)', async () => {
     await request(app).get('/health');
+    await logged();
 
     expect(lines[0]).toMatchObject({ level: 'debug', path: '/health' });
   });
 
   it('cada request simultánea queda con su propio correlationId', async () => {
     await Promise.all(['aaaa-11111111', 'bbbb-22222222', 'cccc-33333333'].map((id) => request(app).get('/ok').set('x-correlation-id', id)));
+    await logged(3);
 
     expect(lines.map((l) => l.correlationId).sort()).toEqual(['aaaa-11111111', 'bbbb-22222222', 'cccc-33333333']);
   });
