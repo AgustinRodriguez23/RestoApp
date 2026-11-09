@@ -40,16 +40,16 @@ jobs:
           - { name: web, dockerfile: apps/web/Dockerfile }
           - { name: notifications-service, dockerfile: services/notifications-service/Dockerfile }
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }} # token temporal de la corrida: no hay que crear secretos
       - name: Etiquetas y metadatos de la imagen
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # ghcr.io/<usuario>/<repo>/<servicio> (el nombre se pasa a minúsculas solo)
           images: ghcr.io/${{ github.repository }}/${{ matrix.name }}
@@ -58,7 +58,7 @@ jobs:
             type=sha,prefix=sha-
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}

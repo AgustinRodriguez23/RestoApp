@@ -9,9 +9,25 @@ updates:
       # Las actualizaciones menores y parches van juntas en un solo PR
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # NestJS 12 (y lo que va con él: @nestjs/config y @nestjs/mongoose 12, mongoose 9) es una migración aparte, que
+      # pide Node 24 con ESM y cambia APIs. Se hace a mano y de una, no con PRs sueltos que rompen el CI por separado.
+      - dependency-name: "@nestjs/*"
+        update-types: [version-update:semver-major]
+      - dependency-name: mongoose
+        update-types: [version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
+    groups:
+      # Todas las acciones en un solo PR: están en líneas vecinas de los mismos workflows y, en PRs separados, se pisan
+      actions:
+        patterns: ["*"]
   - package-ecosystem: docker
     directories: [/services/*, /apps/web]
     schedule: { interval: monthly }
+    ignore:
+      # Solo las versiones pares de Node llegan a LTS (soporte largo); las impares duran unos meses. El cambio de
+      # versión mayor se hace a mano, a la próxima LTS, en los Dockerfiles y en el CI a la vez.
+      - dependency-name: node
+        update-types: [version-update:semver-major]
