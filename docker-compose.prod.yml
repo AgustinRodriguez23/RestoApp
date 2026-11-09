@@ -37,9 +37,9 @@ x-postgres-healthcheck: &postgres-healthcheck
 # y después lo reinicia. Con --host "$(hostname)" el chequeo no se conforma con ese temporal: espera al definitivo.
 x-mongo-healthcheck: &mongo-healthcheck
   test: ["CMD-SHELL", "mongosh --host \"$$(hostname)\" --quiet --eval \"db.adminCommand('ping').ok\""]
-  interval: 5s
+  interval: 30s # cada chequeo cuesta ~1 s de CPU: ver en docker-compose.yml
   timeout: 20s
-  retries: 10
+  retries: 3
   start_period: 2m
   start_interval: 3s
 
@@ -304,9 +304,9 @@ services:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
+      interval: 30s # la CLI de Erlang cuesta ~1,2 s de CPU por chequeo: ver en docker-compose.yml
       timeout: 20s
-      retries: 10
+      retries: 3
       start_period: 2m
       start_interval: 3s
 
