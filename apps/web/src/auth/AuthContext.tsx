@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import type { AuthResponse, User } from '../api/types';
+import type { AuthResponse, DemoRole, User } from '../api/types';
 import { api, configureApi } from '../lib/api';
 
 /**
@@ -43,6 +43,8 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<User>;
   register: (input: { name: string; email: string; password: string }) => Promise<User>;
+  /** Entra con la cuenta de demo de ese rol. La contraseña la pone el servidor: el front solo manda el rol. */
+  loginAsDemo: (role: DemoRole) => Promise<User>;
   /** Pide un token con los datos actuales: el rol viaja dentro del token y cambia, por ejemplo, al aprobarse la solicitud para ser dueño. */
   refreshSession: () => Promise<User>;
   logout: () => void;
@@ -89,6 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await api.post('/auth/register', input);
         return start((await api.post<AuthResponse>('/auth/login', { email: input.email, password: input.password })).data);
       },
+      loginAsDemo: async (role) => start((await api.post<AuthResponse>('/auth/demo', { role })).data),
       refreshSession: async () => start((await api.post<AuthResponse>('/auth/token')).data),
       logout,
     }),

@@ -65,6 +65,83 @@ describe('LoginPage', () => {
     await screen.findByText(/Elegí dónde comer/);
     expect(server.callsTo('POST', '/auth/register')[0]?.body).toEqual({ name: 'Ana García', email: 'ana@example.com', password: 'Password123' });
   });
+
+  describe('cuentas de demo', () => {
+    const OWNER = { ...USER, id: 'u-demo', name: 'Dueño de demo', role: 'RESTAURANT_OWNER' as const };
+    const demo = (accounts: string[]) => ({ 'GET /auth/demo': { body: { accounts } } });
+
+    it('sin cuentas de demo en el servidor no muestra los botones', async () => {
+      const server = mockApi(demo([]));
+      renderApp('/ingresar');
+
+      await waitFor(() => expect(server.callsTo('GET', '/auth/demo')).toHaveLength(1));
+      expect(screen.queryByText('¿Solo querés mirar?')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Probar como/ })).not.toBeInTheDocument();
+    });
+
+    it('si el servidor no responde a /auth/demo tampoco: es un extra, no muestra error', async () => {
+      const server = mockApi({ 'GET /auth/demo': { status: 503, body: { message: 'caído' } } });
+      renderApp('/ingresar');
+
+      await waitFor(() => expect(server.callsTo('GET', '/auth/demo')).toHaveLength(1));
+      expect(screen.queryByRole('button', { name: /Probar como/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('muestra solo los botones de las cuentas configuradas', async () => {
+      mockApi(demo(['customer']));
+      renderApp('/ingresar');
+
+      expect(await screen.findByRole('button', { name: 'Probar como cliente' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Probar como dueño' })).not.toBeInTheDocument();
+    });
+
+    it('"Probar como dueño" manda solo el rol (nunca una contraseña), guarda la sesión y abre el panel', async () => {
+      const server = mockApi({
+        ...demo(['owner', 'customer']),
+        'POST /auth/demo': { body: { accessToken: 'jwt-demo', user: OWNER } },
+        'GET /owner/restaurants': { body: [] },
+      });
+      const user = userEvent.setup();
+      renderApp('/ingresar');
+
+      await user.click(await screen.findByRole('button', { name: 'Probar como dueño' }));
+
+      expect(await screen.findByRole('heading', { name: 'Panel del local' })).toBeInTheDocument();
+      expect(server.callsTo('POST', '/auth/demo')[0]?.body).toEqual({ role: 'owner' });
+      expect(server.callsTo('POST', '/auth/login')).toHaveLength(0);
+      expect(JSON.parse(localStorage.getItem('reservas.session') ?? '{}')).toMatchObject({ token: 'jwt-demo', user: { role: 'RESTAURANT_OWNER' } });
+    });
+
+    it('"Probar como cliente" vuelve a donde se quería ir', async () => {
+      const server = mockApi({
+        ...demo(['owner', 'customer']),
+        'POST /auth/demo': { body: { accessToken: 'jwt-demo', user: USER } },
+        'GET /reservations/mine': { body: { data: [], page: 1, limit: 50, total: 0, totalPages: 0 } },
+      });
+      const user = userEvent.setup();
+      renderApp('/reservas'); // sin sesión: RequireAuth manda al login
+
+      await user.click(await screen.findByRole('button', { name: 'Probar como cliente' }));
+
+      expect(await screen.findByRole('heading', { name: 'Mis reservas' })).toBeInTheDocument();
+      expect(server.callsTo('POST', '/auth/demo')[0]?.body).toEqual({ role: 'customer' });
+    });
+
+    it('si la demo no está disponible lo dice y no inicia sesión', async () => {
+      mockApi({
+        ...demo(['owner']),
+        'POST /auth/demo': { status: 503, body: { message: 'La cuenta de demo no está disponible en este momento' } },
+      });
+      const user = userEvent.setup();
+      renderApp('/ingresar');
+
+      await user.click(await screen.findByRole('button', { name: 'Probar como dueño' }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('La cuenta de demo no está disponible en este momento');
+      expect(localStorage.getItem('reservas.session')).toBeNull();
+    });
+  });
 });
 
 describe('RestaurantsPage', () => {

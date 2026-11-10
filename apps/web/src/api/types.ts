@@ -11,6 +11,9 @@ export interface AuthResponse {
   user: User;
 }
 
+/** Las cuentas de demo que puede ofrecer el servidor (GET /auth/demo). */
+export type DemoRole = 'owner' | 'customer';
+
 export interface Page<T> {
   data: T[];
   page: number;

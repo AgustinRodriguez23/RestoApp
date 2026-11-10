@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../lib/api';
-import type { AppNotification, CreateReservationInput, NotificationsPage, DaySummary, MenuCategory, MenuItemInput, OwnerRequest, OwnerRequestInput, OwnerRequestStatus, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
+import type { AppNotification, CreateReservationInput, DemoRole, NotificationsPage, DaySummary, MenuCategory, MenuItemInput, OwnerRequest, OwnerRequestInput, OwnerRequestStatus, OwnerReservation, RestaurantInput, Page, Payment, Reservation, ReservationStatus, Restaurant, RestaurantOverview } from './types';
 
 /**
  * Todo el estado que vive en el servidor pasa por React Query: caché, reintentos, "cargando" y
@@ -120,6 +120,24 @@ export function usePayReservation() {
 }
 
 /** Panel del dueño */
+/**
+ * Las cuentas de demo que ofrece el servidor. Si no hay ninguna, o si el pedido falla, la lista queda vacía y el
+ * login no muestra los botones: es un extra, nunca tiene que mostrar un error.
+ */
+export function useDemoAccounts() {
+  return useQuery({
+    queryKey: ['auth', 'demo'] as const,
+    queryFn: async ({ signal }) => {
+      try {
+        return (await api.get<{ accounts: DemoRole[] }>('/auth/demo', undefined, signal)).accounts;
+      } catch {
+        return [];
+      }
+    },
+    staleTime: Infinity, // cambia solo si se toca el .env del servidor
+  });
+}
+
 export function useMyRestaurants() {
   return useQuery({
     queryKey: ['owner', 'restaurants'] as const,
