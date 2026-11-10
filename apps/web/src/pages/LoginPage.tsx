@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useDemoAccounts } from '../api/hooks';
+import type { DemoRole } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { Button, ErrorNotice, Field, inputClass } from '../components/ui';
 import { useAppDispatch } from '../store';
@@ -89,6 +91,62 @@ export function LoginPage() {
           {isRegister ? 'Crear cuenta' : 'Ingresar'}
         </Button>
       </form>
+
+      <DemoAccess from={from} />
     </div>
+  );
+}
+
+const DEMO_OPTIONS: Record<DemoRole, { label: string; description: string }> = {
+  owner: { label: 'Probar como dueño', description: 'El panel de un restaurante: reservas del día, mesas, horarios y carta.' },
+  customer: { label: 'Probar como cliente', description: 'Reservar una mesa y pagar la seña (con una pasarela de prueba, sin plata real).' },
+};
+
+/**
+ * Entrar sin registrarse, con una cuenta compartida de demo. Solo aparece si el servidor tiene alguna configurada.
+ * El dueño va directo a su panel; el cliente, a donde quería ir (por defecto, la lista de restaurantes).
+ */
+function DemoAccess({ from }: { from: string }) {
+  const { data: accounts = [] } = useDemoAccounts();
+  const { loginAsDemo } = useAuth();
+  const navigate = useNavigate();
+  const dispatch = useAppDispatch();
+  const [pending, setPending] = useState<DemoRole | null>(null);
+  const [error, setError] = useState<unknown>(null);
+
+  if (accounts.length === 0) return null;
+
+  async function enter(role: DemoRole) {
+    setError(null);
+    setPending(role);
+    try {
+      await loginAsDemo(role);
+      dispatch(toastActions.push('success', 'Entraste con la cuenta de demo. Se reinicia todas las noches.'));
+      void navigate(role === 'owner' ? '/panel' : from, { replace: true });
+    } catch (e) {
+      setError(e);
+    } finally {
+      setPending(null);
+    }
+  }
+
+  return (
+    <section aria-labelledby="demo-title" className="grid gap-3 rounded-xl border border-line bg-surface p-4">
+      <div>
+        <h2 id="demo-title" className="font-semibold">¿Solo querés mirar?</h2>
+        <p className="mt-1 text-sm text-muted">Entrá con una cuenta de demo, sin registrarte.</p>
+      </div>
+      <ul className="grid gap-3">
+        {accounts.map((role) => (
+          <li key={role} className="grid gap-1">
+            <Button type="button" variant="secondary" busy={pending === role} disabled={pending !== null} onClick={() => void enter(role)}>
+              {DEMO_OPTIONS[role].label}
+            </Button>
+            <p className="text-xs text-muted">{DEMO_OPTIONS[role].description}</p>
+          </li>
+        ))}
+      </ul>
+      {error !== null && <ErrorNotice error={error} title="No pudimos entrar a la demo" />}
+    </section>
   );
 }
