@@ -362,6 +362,11 @@ services:
       NOTIFICATIONS_SERVICE_URL: http://notifications-service:3005
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-3000}
+      # Cuentas de demo (botones "Probar como…" del login). Vacías: no hay botones. Ver .env.example
+      DEMO_OWNER_EMAIL: ${DEMO_OWNER_EMAIL:-}
+      DEMO_OWNER_PASSWORD: ${DEMO_OWNER_PASSWORD:-}
+      DEMO_CUSTOMER_EMAIL: ${DEMO_CUSTOMER_EMAIL:-}
+      DEMO_CUSTOMER_PASSWORD: ${DEMO_CUSTOMER_PASSWORD:-}
       # El navegador entra por nginx (servicio web), que agrega X-Forwarded-For: así el BFF ve la IP real
       # para los límites de login. Ojo: el puerto 3000 publicado acá permite saltear nginx e inventar ese header;
       # en producción no se publica (ver docker-compose.prod.yml).

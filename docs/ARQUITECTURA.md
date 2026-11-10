@@ -302,6 +302,7 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
 | POST | `/auth/register`, `/auth/login` | Reenvían a auth-service, con **límite de intentos** (429, ver abajo) |
 | GET | `/auth/me` | Perfil del usuario |
 | POST | `/auth/token` | Token con el rol actual y el mismo vencimiento (después de aprobarse la solicitud para ser dueño) |
+| GET, POST | `/auth/demo` | Qué cuentas de demo hay (`owner`, `customer`) / entrar con una (`{ role }`): devuelve lo mismo que el login |
 | POST, GET | `/owner-requests`, `/owner-requests/mine` | Pedir ser dueño / ver la propia. **Admin**: `GET /owner-requests` lista por estado |
 | POST | `/owner-requests/:id/approve`, `/owner-requests/:id/reject` | **Admin**: aprobar o rechazar con motivo |
 | GET | `/restaurants` | Listado con búsqueda y filtros |
@@ -339,8 +340,10 @@ Es la única puerta que usará el frontend. Valida el JWT, reenvía a los servic
   | `POST /auth/login` | IP + email | 10 | Adivinar la contraseña de una cuenta |
   | `POST /auth/login` | IP | 50 | Probar muchas cuentas desde el mismo lugar |
   | `POST /auth/register` | IP | 30 | Crear cuentas en masa |
+  | `POST /auth/demo` | IP | 20 | Cargarle la CPU a auth-service (cada entrada es un bcrypt) |
 
   Pasado el límite responde **429** con el formato de error de siempre (el front muestra el mensaje tal cual) y `Retry-After-<límite>` en segundos; el pedido ni llega a auth-service. La clave de cuenta es IP + email y no el email solo: si no, cualquiera podría bloquearle el login a otra persona escribiendo mal su contraseña desde otro lado.
+- **Cuentas de demo sin contraseña a la vista.** Para que alguien pruebe la app sin registrarse, el login ofrece «Probar como dueño / cliente». El front manda solo el rol a `POST /auth/demo`, y el BFF hace el login con las credenciales de su entorno (`DEMO_*`). Así la contraseña no queda en el bundle de JavaScript ni en el repo, y nadie puede entrar "a mano" con esa cuenta desde otro lado. Sin las variables, `GET /auth/demo` devuelve una lista vacía y el front no muestra los botones (desarrollo y CI). Si la contraseña del entorno dejó de coincidir, responde 503 y no 401: el error es de configuración, no del visitante. Las cuentas son compartidas y un script las vuelve a su estado modelo todas las noches (ver `docs/OPERACION.md`).
 - **La IP real detrás de nginx (`TRUST_PROXY`)**: nginx agrega la IP del cliente al final de `X-Forwarded-For`, y con `TRUST_PROXY=1` (ya puesto en el compose) el BFF toma justo esa. Sin esto, todo el tráfico del navegador tendría la IP de nginx: un solo contador para todos, y un atacante bloquearía el login de todo el mundo. Probado: 11 intentos por nginx con un `X-Forwarded-For` inventado distinto en cada uno dan 429 igual. En producción hay un salto más, Caddy, y va `TRUST_PROXY=2` (ver «Producción»).
 - **Headers de seguridad con `helmet`** (en `app.setup.ts`, así los tests usan la misma configuración): `nosniff`, no dejarse meter en iframes de otro sitio, CSP y sin `X-Powered-By: Express` (no le regala a nadie qué framework probar). La CSP es la de helmet, que deja andar el Swagger de `/docs`. Se sacan HSTS y `upgrade-insecure-requests` porque suponen HTTPS: el segundo, además, rompe el Swagger abierto por IP (`http://192.168…:3000/docs` pediría sus archivos por https). Los servicios internos no lo tienen: en un deploy no se publican.
 
