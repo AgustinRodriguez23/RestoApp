@@ -13,6 +13,12 @@ export const THROTTLE_ACCOUNT = 'account';
 export const REGISTER_LIMIT = 30;
 
 /**
+ * Entradas con la cuenta de demo por IP cada 15 minutos. No hay contraseña que adivinar, pero cada una le cuesta
+ * un bcrypt a auth-service: el límite evita que alguien lo use para cargarle la CPU.
+ */
+export const DEMO_LIMIT = 20;
+
+/**
  * Límites de login y registro. Van en el BFF porque es la entrada: es el único que ve la IP del cliente
  * (con nginx adelante y TRUST_PROXY). auth-service ve todo como si viniera del BFF.
  *

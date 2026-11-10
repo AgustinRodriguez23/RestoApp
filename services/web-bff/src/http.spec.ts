@@ -1231,6 +1231,7 @@ describe('web-bff (HTTP + servicios falsos)', () => {
 
       expect(Object.keys(doc.paths).sort()).toEqual(
         [
+          '/auth/demo',
           '/auth/login',
           '/auth/me',
           '/auth/register',
