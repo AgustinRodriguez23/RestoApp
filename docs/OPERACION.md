@@ -124,6 +124,72 @@ Tiene que responder `UPDATE 1`. Con `UPDATE 0`, el email no coincide con ninguna
 
 Para sacarle el rol, lo mismo con `role = 'CUSTOMER'`. El e2e crea su admin de esta misma forma, así que el procedimiento queda probado en cada PR.
 
+## Cuentas de demo
+
+Con esto el login muestra «Probar como dueño» y «Probar como cliente», para que alguien (por ejemplo, un recruiter) vea la app sin registrarse. El navegador manda solo el rol, y el BFF entra con las credenciales que tiene en el `.env`: la contraseña no aparece en ningún lado público. Las cuentas son compartidas, así que un script las vuelve a su estado modelo todas las noches.
+
+### Crearlas, una sola vez
+
+1. Generar dos contraseñas (hexadecimal, así no hay caracteres que la terminal interprete):
+
+```bash
+openssl rand -hex 16
+```
+
+2. Registrar las dos cuentas. Con emails `@example.com`, un dominio reservado para ejemplos que no es de nadie. En una sola línea cada una, cambiando `<clave>`:
+
+```bash
+curl -s "https://$(grep ^DOMAIN= ~/restoapp/.env | cut -d= -f2)/api/auth/register" -H 'content-type: application/json' -d '{"email":"demo-dueno@example.com","name":"Dueño de demo","password":"<clave>"}'
+```
+
+```bash
+curl -s "https://$(grep ^DOMAIN= ~/restoapp/.env | cut -d= -f2)/api/auth/register" -H 'content-type: application/json' -d '{"email":"demo-cliente@example.com","name":"Cliente de demo","password":"<clave>"}'
+```
+
+Las dos quedan como clientes. Al dueño se le cambia el rol como al admin (ver «Crear un admin»), con `role = 'RESTAURANT_OWNER'` y su email.
+
+3. Agregarlas al `.env` y aplicar el cambio:
+
+```
+DEMO_OWNER_EMAIL=demo-dueno@example.com
+DEMO_OWNER_PASSWORD=<clave del dueño>
+DEMO_CUSTOMER_EMAIL=demo-cliente@example.com
+DEMO_CUSTOMER_PASSWORD=<clave del cliente>
+```
+
+```bash
+docker compose up -d web-bff
+```
+
+4. Comprobar: `curl -s https://<dominio>/api/auth/demo` tiene que responder `{"accounts":["owner","customer"]}`.
+
+5. Correr el reseteo a mano una vez: crea el restaurante modelo del dueño, «Bodegón La Demo», con su carta.
+
+```bash
+docker compose run --rm --no-deps -v /home/deploy/restoapp/scripts:/scripts:ro -e BFF_URL=http://web-bff:3000 --entrypoint node web-bff /scripts/demo-reset.mjs
+```
+
+Tiene que terminar con `reseteo ok`.
+
+### El reseteo de todas las noches
+
+`scripts/demo-reset.mjs` usa la API del BFF, igual que el front, y no toca las bases:
+
+- **Cliente:** cancela sus reservas por venir. Así libera las mesas y no llega al tope de reservas sin pagar.
+- **Dueño:** deja solo el restaurante modelo, con sus datos, mesas, horarios y carta originales. Los demás los borra. El modelo se corrige en el lugar y no se borra y se vuelve a crear, así conserva su historial de reservas.
+
+Corre adentro de un contenedor de la imagen del web-bff (`docker compose run`), porque el servidor no tiene Node instalado y ese contenedor ya trae las variables `DEMO_*`. Para programarlo, `crontab -e` y agregar esta línea al final:
+
+```
+0 7 * * * cd /home/deploy/restoapp && docker compose run --rm --no-deps -v /home/deploy/restoapp/scripts:/scripts:ro -e BFF_URL=http://web-bff:3000 --entrypoint node web-bff /scripts/demo-reset.mjs >> /home/deploy/backups/demo-reset.log 2>&1
+```
+
+Corre a las 7:00 UTC (4:00 en Argentina), después del backup. El `cd` hace falta porque compose busca el `docker-compose` y el `.env` en la carpeta actual. Para ver cómo le fue: `tail ~/backups/demo-reset.log`, con una línea `reseteo ok` por noche.
+
+Si el log dice que una cuenta no pudo entrar (401), la contraseña del `.env` ya no coincide con la de la cuenta. Mientras tanto, el botón de esa cuenta responde «no disponible» en vez de entrar.
+
+Para sacar la demo: borrar las cuatro variables, `docker compose up -d web-bff`, y la línea del cron.
+
 ## Backups
 
 Las bases son contenedores con sus datos en volúmenes de Docker en el disco del servidor. Si el disco se rompe o se borra un volumen, se pierden: no hay nadie más guardando una copia.

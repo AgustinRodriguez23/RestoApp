@@ -4,7 +4,7 @@ Plataforma de **reservas de restaurantes con seña**. El cliente elige un restau
 
 Por dentro es un sistema de **microservicios** con NestJS que se coordinan por eventos, el tipo de arquitectura que usan las empresas cuando un solo backend ya no alcanza.
 
-🔗 **Demo en vivo:** https://restoapp.duckdns.org
+🔗 **Demo en vivo:** https://restoapp.duckdns.org. En «Ingresar» están los botones **Probar como dueño** y **Probar como cliente**, para entrar sin registrarse.
 
 > Los pagos son simulados: no se cobra dinero real. Al pagar la seña se elige un medio de prueba (aprobado, rechazado, lento...) para ver cómo responde el sistema en cada caso.
 
