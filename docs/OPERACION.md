@@ -163,7 +163,7 @@ docker compose up -d web-bff
 
 4. Comprobar: `curl -s https://<dominio>/api/auth/demo` tiene que responder `{"accounts":["owner","customer"]}`.
 
-5. Correr el reseteo a mano una vez: crea el restaurante modelo del dueño, «Bodegón La Demo», con su carta.
+5. Correr el reseteo a mano una vez: crea el restaurante modelo del dueño, «Bodegón La Demo», con su carta y la agenda de ejemplo. La primera vez tarda cerca de un minuto, porque hace unas 50 reservas con su pago.
 
 ```bash
 docker compose run --rm --no-deps -v /home/deploy/restoapp/scripts:/scripts:ro -e BFF_URL=http://web-bff:3000 --entrypoint node web-bff /scripts/demo-reset.mjs
@@ -177,6 +177,9 @@ Tiene que terminar con `reseteo ok`.
 
 - **Cliente:** cancela sus reservas por venir. Así libera las mesas y no llega al tope de reservas sin pagar.
 - **Dueño:** deja solo el restaurante modelo, con sus datos, mesas, horarios y carta originales. Los demás los borra. El modelo se corrige en el lugar y no se borra y se vuelve a crear, así conserva su historial de reservas.
+- **Agenda de ejemplo:** para que el panel del dueño no esté vacío, cuatro clientes ficticios (`demo-ejemplo-1@example.com` a `demo-ejemplo-4@example.com`) tienen reservado el restaurante modelo para hoy y los 6 días siguientes: unas 7 reservas por día, casi todas pagadas y una con el pago rechazado. Cada noche se agrega el día que entra en la ventana, y las de los 3 días anteriores que siguen confirmadas se marcan como «asistió», salvo una por día que queda como «no vino». Así, entrando como dueño a la tarde, las reservas del mediodía ya se pueden marcar. El plan de cada día sale de la fecha: repetir el script no duplica nada. Si un visitante ocupó la mesa de un horario, ese horario se saltea.
+
+Los clientes ficticios se registran solos la primera vez. Sus contraseñas no se guardan en ningún lado: se calculan a partir de `DEMO_OWNER_PASSWORD` (un HMAC con su email). Por eso, **si se cambia la contraseña del dueño de demo, estos clientes ya no pueden entrar** y el log lo avisa. Para arreglarlo, borrar las cuatro cuentas con `psql` en `postgres-auth` (`DELETE FROM users WHERE email LIKE 'demo-ejemplo-%@example.com';`) y correr el reseteo: los vuelve a registrar con la contraseña nueva. Las reservas de ejemplo se reconocen por el nombre del cliente y no por el id de la cuenta, así que las que ya existían siguen contando y la agenda no se duplica.
 
 Corre adentro de un contenedor de la imagen del web-bff (`docker compose run`), porque el servidor no tiene Node instalado y ese contenedor ya trae las variables `DEMO_*`. Para programarlo, `crontab -e` y agregar esta línea al final:
 
@@ -188,7 +191,7 @@ Corre a las 7:00 UTC (4:00 en Argentina), después del backup. El `cd` hace falt
 
 Si el log dice que una cuenta no pudo entrar (401), la contraseña del `.env` ya no coincide con la de la cuenta. Mientras tanto, el botón de esa cuenta responde «no disponible» en vez de entrar.
 
-Para sacar la demo: borrar las cuatro variables, `docker compose up -d web-bff`, y la línea del cron.
+Para sacar la demo: borrar las cuatro variables, `docker compose up -d web-bff`, y la línea del cron. Las cuentas y sus reservas quedan en las bases, pero ya nadie las usa.
 
 ## Backups
 
