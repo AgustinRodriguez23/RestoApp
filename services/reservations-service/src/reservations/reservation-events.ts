@@ -8,7 +8,7 @@
  *  reservations ──reservation.expired──────────▶ payments   (anula el cobro pendiente)
  *  reservations ──reservation.cancelled────────▶ payments   (anula el cobro o devuelve la seña si refundable)
  *  reservations ──reservation.refund_requested─▶ payments   (pagó tarde: la reserva ya no existe, se devuelve)
- *  payments     ──payment.refunded─────────────▶ (informativo)
+ *  payments     ──payment.refunded─────────────▶ notifications (aviso "Te devolvimos la seña")
  */
 export const ReservationEvents = {
   CREATED: 'reservation.created',

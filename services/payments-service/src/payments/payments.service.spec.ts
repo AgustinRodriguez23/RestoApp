@@ -15,6 +15,7 @@ const payment = (overrides: Partial<Payment> = {}): Payment =>
     reservationId: 'res-1',
     customerId: 'c1',
     amountCents: 15000,
+    currency: 'ARS',
     status: PaymentStatus.SUCCEEDED,
     providerChargeId: 'ch_1',
     providerRefundId: null,
@@ -63,7 +64,14 @@ describe('PaymentsService (reglas de estado, con mocks)', () => {
       expect(p).toMatchObject({ status: PaymentStatus.REFUNDED, providerRefundId: 're_1' });
       expect(p.refundedAt).toBeInstanceOf(Date);
       expect(save).toHaveBeenCalledWith(p);
-      expect(outbox.enqueue).toHaveBeenCalledWith(manager, 'payment.refunded', expect.objectContaining({ paymentId: 'pay-1', amountCents: 15000, reason: 'CANCELLED_BY_CUSTOMER' }));
+      expect(outbox.enqueue).toHaveBeenCalledWith(manager, 'payment.refunded', {
+        paymentId: 'pay-1',
+        reservationId: 'res-1',
+        customerId: 'c1',
+        amountCents: 15000,
+        currency: 'ARS',
+        reason: 'CANCELLED_BY_CUSTOMER',
+      });
     });
 
     it('es idempotente: si ya estaba devuelto no llama a la pasarela ni emite nada', async () => {

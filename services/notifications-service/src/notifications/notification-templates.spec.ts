@@ -1,5 +1,5 @@
 import { EventEnvelope, PoisonMessageError } from '../messaging/event-envelope';
-import { buildNotification, formatWhen } from './notification-templates';
+import { buildNotification, formatMoney, formatWhen } from './notification-templates';
 
 const envelope = (type: string, data: Record<string, unknown>): EventEnvelope => ({
   id: 'evt-1',
@@ -134,6 +134,56 @@ describe('buildNotification', () => {
         title: 'Tu reserva venció',
         body: 'No se pagó la seña a tiempo, así que la mesa en La Parrilla para el sábado 31 de octubre a las 21:30 se liberó. Podés reservar de nuevo cuando quieras.',
       });
+    });
+  });
+
+  describe('payment.refunded', () => {
+    // Lo publica payments-service: sin restaurante ni fecha, con el monto y el motivo
+    const refunded = { paymentId: 'pay-1', reservationId: 'res-1', customerId: 'cust-1', amountCents: 800000, currency: 'ARS' };
+    // Intl separa el signo con un espacio duro (U+00A0): se normaliza a un espacio común para comparar
+    const money = (text: string | undefined) => text?.replace(/\s/g, ' ');
+
+    it('si canceló el cliente con tiempo, le confirma la devolución con el monto', () => {
+      const draft = buildNotification(envelope('payment.refunded', { ...refunded, reason: 'CANCELLED_BY_CUSTOMER' }));
+      expect(draft).toMatchObject({ userId: 'cust-1', reservationId: 'res-1', type: 'DEPOSIT_REFUNDED', title: 'Te devolvimos la seña' });
+      expect(money(draft?.body)).toBe('Cancelaste con tiempo, así que te devolvimos los $ 8.000 de la seña.');
+    });
+
+    it('si canceló el restaurante, lo dice', () => {
+      const draft = buildNotification(envelope('payment.refunded', { ...refunded, reason: 'CANCELLED_BY_OWNER' }));
+      expect(money(draft?.body)).toBe('Te devolvimos los $ 8.000 de la seña de la reserva que canceló el restaurante.');
+    });
+
+    it.each(['RESERVATION_EXPIRED', 'RESERVATION_CANCELLED'])('si pagó tarde (%s), explica por qué se devuelve', (reason) => {
+      const draft = buildNotification(envelope('payment.refunded', { ...refunded, reason }));
+      expect(money(draft?.body)).toBe('El pago llegó cuando la reserva ya no estaba activa, así que te devolvimos los $ 8.000 de la seña.');
+    });
+
+    it('con centavos los muestra; sin monto ni motivo, el mensaje se arma igual', () => {
+      expect(money(buildNotification(envelope('payment.refunded', { ...refunded, amountCents: 150050, reason: 'X' }))?.body)).toBe(
+        'Te devolvimos los $ 1.500,50 de la seña de tu reserva.',
+      );
+      expect(buildNotification(envelope('payment.refunded', { reservationId: 'res-1', customerId: 'cust-1' }))?.body).toBe(
+        'Te devolvimos la seña de tu reserva.',
+      );
+    });
+
+    it('no inventa un restaurante: el evento no lo trae', () => {
+      expect(buildNotification(envelope('payment.refunded', refunded))).not.toHaveProperty('restaurantId');
+    });
+
+    it('sin customerId (un payments-service viejo) va a la DLQ: no se sabe a quién avisar', () => {
+      expect(() => buildNotification(envelope('payment.refunded', { ...refunded, customerId: undefined }))).toThrow(PoisonMessageError);
+    });
+  });
+
+  describe('formatMoney', () => {
+    it.each([0, -100, 12.5, '800000', undefined])('con %p devuelve undefined', (value) => {
+      expect(formatMoney(value, 'ARS')).toBeUndefined();
+    });
+
+    it('una moneda inválida no rompe el aviso', () => {
+      expect(formatMoney(800000, 'NO-ES-MONEDA')).toBe('8000 NO-ES-MONEDA');
     });
   });
 

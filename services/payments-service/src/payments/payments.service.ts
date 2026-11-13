@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
-import { PaymentEvents, ReservationCreatedData } from '../events/payment-events';
+import { PaymentEvents, PaymentRefundedData, ReservationCreatedData } from '../events/payment-events';
 import { GatewayUnavailableError, PAYMENT_GATEWAY, PaymentGateway } from '../gateway/payment-gateway';
 import { OutboxService } from '../messaging/outbox.service';
 import { JwtPayload } from '../security/jwt-payload';
@@ -161,12 +161,15 @@ export class PaymentsService {
     payment.providerRefundId = refundId;
     payment.refundedAt = new Date();
     await manager.getRepository(Payment).save(payment);
-    await this.outbox.enqueue(manager, PaymentEvents.REFUNDED, {
+    const refunded: PaymentRefundedData = {
       paymentId: payment.id,
       reservationId: payment.reservationId,
+      customerId: payment.customerId,
       amountCents: payment.amountCents,
+      currency: payment.currency,
       reason,
-    });
+    };
+    await this.outbox.enqueue(manager, PaymentEvents.REFUNDED, refunded);
     this.logger.log(`Pago ${payment.id} devuelto (${reason})`);
   }
 
