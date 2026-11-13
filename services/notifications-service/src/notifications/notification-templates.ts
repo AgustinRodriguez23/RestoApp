@@ -12,8 +12,11 @@ export interface NotificationDraft {
   restaurantId?: string;
 }
 
-/** Eventos de las reservas que este servicio escucha (las routing keys de su cola). */
-export const NOTIFIABLE_EVENTS = ['reservation.confirmed', 'reservation.cancelled', 'reservation.expired'] as const;
+/**
+ * Eventos de las reservas y de su seña que este servicio escucha (las routing keys de su cola).
+ * `payment.refunded` lo publica payments-service; va en la misma cola porque también es sobre una reserva.
+ */
+export const NOTIFIABLE_EVENTS = ['reservation.confirmed', 'reservation.cancelled', 'reservation.expired', 'payment.refunded'] as const;
 
 /** Eventos de las solicitudes para ser dueño (los publica auth-service). Van a otra cola: ver NotificationEventsConsumer. */
 export const OWNER_REQUEST_EVENTS = ['owner-request.approved', 'owner-request.rejected'] as const;
@@ -31,6 +34,9 @@ interface ReservationEventData {
   reason?: unknown;
   refundable?: unknown;
   depositCents?: unknown;
+  /** Solo en payment.refunded. */
+  amountCents?: unknown;
+  currency?: unknown;
 }
 
 const text = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
@@ -67,6 +73,30 @@ export function formatWhen(startsAt: unknown, timeZone: unknown): string | undef
 }
 
 const people = (n: unknown) => (typeof n === 'number' && n > 0 ? `${n} ${n === 1 ? 'persona' : 'personas'}` : undefined);
+
+/** "$ 8.000" (los centavos solo si hay). undefined si el evento no trae un monto válido: el mensaje se arma igual, sin monto. */
+export function formatMoney(amountCents: unknown, currency: unknown): string | undefined {
+  if (typeof amountCents !== 'number' || !Number.isInteger(amountCents) || amountCents <= 0) return undefined;
+  const code = text(currency) ?? 'ARS';
+  const decimals = amountCents % 100 === 0 ? 0 : 2;
+  try {
+    return new Intl.NumberFormat('es-AR', { style: 'currency', currency: code, minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(amountCents / 100);
+  } catch {
+    return `${(amountCents / 100).toFixed(decimals)} ${code}`; // moneda inválida: mejor el número solo que perder el aviso
+  }
+}
+
+/** El aviso de que se devolvió la seña. El motivo cambia la explicación; el monto, si viene, va siempre. */
+function refundBody(reason: unknown, amount: string | undefined): string {
+  const deposit = amount ? `los ${amount} de la seña` : 'la seña';
+  if (reason === 'CANCELLED_BY_CUSTOMER') return `Cancelaste con tiempo, así que te devolvimos ${deposit}.`;
+  if (reason === 'CANCELLED_BY_OWNER') return `Te devolvimos ${deposit} de la reserva que canceló el restaurante.`;
+  // RESERVATION_<estado>: el pago llegó cuando la reserva ya había vencido o se había cancelado
+  if (typeof reason === 'string' && reason.startsWith('RESERVATION_')) {
+    return `El pago llegó cuando la reserva ya no estaba activa, así que te devolvimos ${deposit}.`;
+  }
+  return `Te devolvimos ${deposit} de tu reserva.`;
+}
 
 /**
  * Convierte un evento en la notificación para el usuario (o null si a esa persona no hay nada que avisarle).
@@ -128,6 +158,16 @@ export function buildNotification(envelope: EventEnvelope): NotificationDraft | 
         type: 'RESERVATION_EXPIRED',
         title: 'Tu reserva venció',
         body: `No se pagó la seña a tiempo, así que la mesa en ${restaurant}${forWhen} se liberó. Podés reservar de nuevo cuando quieras.`,
+      };
+
+    // Lo publica payments-service: no trae el restaurante ni la fecha, solo a quién, cuánto y por qué
+    case 'payment.refunded':
+      return {
+        userId,
+        reservationId,
+        type: 'DEPOSIT_REFUNDED',
+        title: 'Te devolvimos la seña',
+        body: refundBody(data.reason, formatMoney(data.amountCents, data.currency)),
       };
 
     default:

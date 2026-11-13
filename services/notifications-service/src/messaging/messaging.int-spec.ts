@@ -222,6 +222,21 @@ describe('notifications-service: consumo de eventos (RabbitMQ real)', () => {
     expect(await queueDepth(deadLetterQueueOf(QUEUE))).toBe(0);
   });
 
+  it('la seña devuelta (evento de payments-service) llega a la cola de reservas y termina en un aviso para el cliente', async () => {
+    const e = event('payment.refunded', {
+      paymentId: 'pay-1',
+      reservationId: 'res-1',
+      customerId: 'cust-1',
+      amountCents: 800000,
+      currency: 'ARS',
+      reason: 'CANCELLED_BY_CUSTOMER',
+    });
+    publish(e.type, e);
+
+    await waitFor(() => inbox.stored.has(e.id));
+    expect(inbox.stored.get(e.id)).toMatchObject({ userId: 'cust-1', reservationId: 'res-1', type: 'DEPOSIT_REFUNDED', title: 'Te devolvimos la seña' });
+  });
+
   it('una solicitud aprobada (evento de auth-service) termina en un aviso para quien la envió, por su propia cola', async () => {
     const e = event('owner-request.approved', { requestId: 'req-1', userId: 'user-1', restaurantName: 'La Esquina de Ana' });
     publish(e.type, e);

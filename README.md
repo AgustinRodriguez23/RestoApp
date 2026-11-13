@@ -20,7 +20,7 @@ Por dentro es un sistema de **microservicios** con NestJS que se coordinan por e
 - **Reservar una mesa**: se elige la cantidad de personas y el día, y la app muestra solo los horarios que tienen mesa libre.
 - **Pagar la seña**: la mesa queda retenida 15 minutos mientras tanto. Si el pago se rechaza o no se completa a tiempo, la reserva se cancela y la mesa vuelve a estar disponible.
 - **Mis reservas**: ver el estado de cada una, pagar las pendientes y cancelar. Cancelando con más de 24 horas de anticipación, la seña se devuelve.
-- **Notificaciones**: una bandeja que se llena sola cuando la reserva se confirma, vence, o se cancela por un pago rechazado o porque la canceló el restaurante, y cuando se revisa la solicitud para ser dueño.
+- **Notificaciones**: una bandeja que se llena sola cuando la reserva se confirma, vence, o se cancela por un pago rechazado o porque la canceló el restaurante, cuando se devuelve la seña, y cuando se revisa la solicitud para ser dueño.
 - **Pedir ser dueño**: se mandan los datos del local y, cuando un administrador lo aprueba, aparece el panel del dueño sin cerrar sesión.
 
 **Como dueño de un restaurante**

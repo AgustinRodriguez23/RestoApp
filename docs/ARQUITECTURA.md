@@ -769,21 +769,23 @@ Cuando una reserva cambia de estado por algo que el cliente **no hizo él mismo*
 | `reservation.cancelled` por **el restaurante** | «El restaurante canceló tu reserva» (y si la seña se devuelve o no) |
 | `reservation.expired` | «Tu reserva venció» |
 | `reservation.cancelled` por el propio cliente | *(nada: lo hizo él)* |
+| `payment.refunded` (de payments) | «Te devolvimos la seña», con el monto y el motivo: canceló con tiempo, canceló el restaurante, o pagó cuando la reserva ya no estaba activa |
 | `owner-request.approved` (de auth) | «Ya sos dueño de restaurante», con link a «Quiero ser dueño», que renueva el token |
 | `owner-request.rejected` (de auth) | «Tu solicitud no fue aprobada», con el motivo |
 
 ```
 reservations ──(outbox)──┐
-                         ├──▶ RabbitMQ ──reservas.events──▶ notifications ──▶ MongoDB (bandeja)
+payments ────(outbox)────┼──▶ RabbitMQ ──reservas.events──▶ notifications ──▶ MongoDB (bandeja)
 auth ────────(outbox)────┘                                        ▲
  React ──GET /notifications, PATCH /:id/read, POST /read-all──▶ BFF ──▶ ┘   (todo filtrado por el `sub` del JWT)
 ```
 
-Cada origen tiene su cola (`notifications-service.reservations` y `notifications-service.owner-requests`) con el mismo handler: así cada una tiene sus reintentos y su DLQ, y un evento roto de un lado no se mezcla con los del otro. En los avisos de la solicitud, `reservationId` y `restaurantId` son `null`; pasaron a opcionales sin migrar nada, porque Mongo no tiene esquema fijo.
+Cada origen tiene su cola (`notifications-service.reservations` y `notifications-service.owner-requests`) con el mismo handler: así cada una tiene sus reintentos y su DLQ, y un evento roto de un lado no se mezcla con los del otro. `payment.refunded` entra por la cola de reservas porque también habla de una reserva. En los avisos de la solicitud, `reservationId` y `restaurantId` son `null`; pasaron a opcionales sin migrar nada, porque Mongo no tiene esquema fijo.
 
 ### Decisiones que vale la pena mirar
 
-- **Los eventos llevan los datos para armar el mensaje** (nombre del restaurante, fecha, personas, zona horaria). Así `notifications` no llama a nadie por HTTP ni depende de que otro servicio esté en pie. El cambio fue **aditivo**: `payments` ignora los campos nuevos.
+- **Los eventos llevan los datos para armar el mensaje** (nombre del restaurante, fecha, personas, zona horaria). Así `notifications` no llama a nadie por HTTP ni depende de que otro servicio esté en pie. El cambio fue **aditivo**: `payments` ignora los campos nuevos. Con `payment.refunded` pasó lo mismo al revés: payments le sumó `customerId` y `currency`. El aviso de la devolución no nombra al restaurante ni la fecha, porque payments no los guarda. Para eso habría que copiarlos al pago, y el aviso se entiende igual porque lleva a «Mis reservas».
+- **La devolución tiene su propio aviso**, aparte de «El restaurante canceló tu reserva». Ese aviso promete la devolución, y este confirma que se hizo. Cuando cancela el propio cliente, la cancelación no se avisa (la hizo él), pero la devolución sí: es plata que vuelve.
 - **Idempotencia con un índice único**: RabbitMQ entrega «al menos una vez», así que un evento puede llegar dos veces. El índice único de `eventId` hace que solo cree una notificación; el segundo intento da error `E11000`, que se trata como «ya procesado» y no como falla.
 - **Privacidad**: todo se filtra por el `sub` del JWT. La notificación de otra persona responde 404 (igual que una inexistente), para no revelar que existe.
 - **Se borran solas a los 90 días** (índice TTL de Mongo): una bandeja no es un historial.
@@ -797,12 +799,12 @@ Cada origen tiene su cola (`notifications-service.reservations` y `notifications
 - Integración contra **RabbitMQ real** (9): evento → notificación, duplicados, reintento ante fallo transitorio, DLQ con el motivo y eventos que no le interesan al servicio.
 - Verificaciones de que los tests detectan regresiones (rompiendo a propósito la idempotencia y el filtro por usuario).
 - Frontend: 8 tests nuevos (campanita, lista, marcar una/todas, filtro, error) y revisión visual a 320, 390 y 1280 px.
-- Punta a punta (`e2e/saga.e2e.mjs`, sección 12): pago aprobado, rechazado, cancelación del dueño y cancelación propia contra el sistema completo. La sección 14 prueba los avisos de la solicitud para ser dueño, de auth a la bandeja.
+- Punta a punta (`e2e/saga.e2e.mjs`, sección 12): pago aprobado, rechazado, cancelación del dueño, cancelación propia con y sin seña pagada y los avisos de devolución, contra el sistema completo. La sección 14 prueba los avisos de la solicitud para ser dueño, de auth a la bandeja.
 
 ### Limitaciones conocidas
 
 - **Los tests de integración no incluyen MongoDB**: simulan la bandeja en memoria. El comportamiento real de Mongo (índice único, TTL, `updateMany`) solo lo prueba la sección 12 del e2e con `docker compose`.
-- No hay avisos por `payment.refunded` (la devolución de la seña) ni para el dueño del local.
+- No hay avisos para el dueño del local: los eventos de reservas no dicen quién es, y hoy cada evento avisa a una sola persona (el índice único de `eventId`).
 - Solo bandeja en la app: sin email ni push.
 - El código de mensajería (conexión a RabbitMQ, sobre del evento, reintentos) está **copiado** en cada servicio. Un paquete compartido está pendiente.
 

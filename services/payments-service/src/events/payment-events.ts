@@ -45,3 +45,18 @@ export interface RefundRequestedData {
   paymentId: string;
   reason: string;
 }
+
+/**
+ * La seña se devolvió. Lo escucha notifications-service para avisarle al cliente: por eso trae a quién (customerId)
+ * y cuánto (amountCents + currency), y así no tiene que preguntarle a nadie.
+ * `reason` es el motivo de la devolución: CANCELLED_BY_CUSTOMER, CANCELLED_BY_OWNER o, si pagó tarde,
+ * RESERVATION_<estado de la reserva> (ej: RESERVATION_EXPIRED).
+ */
+export interface PaymentRefundedData {
+  paymentId: string;
+  reservationId: string;
+  customerId: string;
+  amountCents: number;
+  currency: string;
+  reason: string;
+}

@@ -540,7 +540,15 @@ describe('payments-service (integración con PostgreSQL, RabbitMQ y pasarela sim
       await waitFor(async () => (await statusOf(p.id)) === 'REFUNDED');
       expect(refund).toHaveBeenCalledTimes(1);
       expect(refund).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 15000, idempotencyKey: `refund-${p.id}` }));
-      expect((await outboxOf('payment.refunded', p.id))[0].payload.data).toMatchObject({ amountCents: 15000, reason: 'CANCELLED_BY_CUSTOMER' });
+      // Trae a quién y cuánto: notifications-service le avisa al cliente sin preguntarle a nadie
+      expect((await outboxOf('payment.refunded', p.id))[0].payload.data).toEqual({
+        paymentId: p.id,
+        reservationId: p.reservationId,
+        customerId: p.customerId,
+        amountCents: 15000,
+        currency: p.currency,
+        reason: 'CANCELLED_BY_CUSTOMER',
+      });
       expect((await getPayment(p.id)).body.refundedAt).toBeTruthy();
     });
 

@@ -64,10 +64,10 @@ describe('NotificationEventsConsumer', () => {
   });
 
   describe('registro del consumidor', () => {
-    it('escucha confirmada, cancelada y vencida, y NINGÚN otro evento (por ejemplo, no reservation.created)', async () => {
+    it('escucha confirmada, cancelada, vencida y la seña devuelta, y NINGÚN otro evento (por ejemplo, no reservation.created)', async () => {
       await build().onModuleInit();
       const def = consumers.register.mock.calls[0][0];
-      expect(def.bindings.sort()).toEqual(['reservation.cancelled', 'reservation.confirmed', 'reservation.expired']);
+      expect(def.bindings.sort()).toEqual(['payment.refunded', 'reservation.cancelled', 'reservation.confirmed', 'reservation.expired']);
       expect(def.maxAttempts).toBe(5);
     });
 

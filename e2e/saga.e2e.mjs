@@ -475,6 +475,19 @@ async function main() {
     await waitFor('notificación de cancelación del restaurante', async () => (await inbox()).data.some((n) => n.type === 'RESERVATION_CANCELLED_BY_RESTAURANT'));
     const cancelledNote = (await inbox()).data.find((n) => n.type === 'RESERVATION_CANCELLED_BY_RESTAURANT');
     check('llega "El restaurante canceló tu reserva" y dice que la seña se devuelve', !!cancelledNote?.body.includes('devuelve'), JSON.stringify(cancelledNote));
+    // ...y cuando payments-service efectivamente la devuelve, otro aviso (payment.refunded)
+    const refundOf = async (id) => (await inbox()).data.find((n) => n.reservationId === id && n.type === 'DEPOSIT_REFUNDED');
+    const ownerRefund = await waitFor('aviso de seña devuelta (canceló el dueño)', () => refundOf(byOwner.id));
+    check('llega "Te devolvimos la seña" y menciona al restaurante', !!ownerRefund?.body.includes('canceló el restaurante'), JSON.stringify(ownerRefund));
+
+    // c2) el cliente cancela con tiempo una reserva pagada: no se le avisa la cancelación (la hizo él), sí la devolución
+    const paidMine = (await reserve(slot(day, '20:00'), {}, buyer)).body;
+    await payOk(paidMine.id, 'tok_approved', buyer);
+    await waitStatus(paidMine.id, 'CONFIRMED', buyer);
+    await http('POST', `${BFF}/reservations/${paidMine.id}/cancel`, { token: buyer });
+    const selfRefund = await waitFor('aviso de seña devuelta (canceló el cliente)', () => refundOf(paidMine.id));
+    check('llega "Te devolvimos la seña" con el monto', /Cancelaste con tiempo, así que te devolvimos los \$\s?[\d.]+ de la seña\./.test(selfRefund?.body ?? ''), JSON.stringify(selfRefund));
+    check('y no llega un aviso de cancelación', !(await inbox()).data.some((n) => n.reservationId === paidMine.id && n.type.startsWith('RESERVATION_CANCELLED')));
 
     // d) cancelar uno mismo NO genera aviso (lo hizo la propia persona)
     const mine = (await reserve(slot(day, '18:00'), {}, buyer)).body;
@@ -485,10 +498,11 @@ async function main() {
 
     // e) bandeja: orden, conteo, privacidad, marcar como leída
     const all = await inbox();
-    // 4 avisos: confirmada, pago rechazado y, de la reserva que canceló el dueño, su confirmación y su cancelación
-    check('hay 4 notificaciones y las 4 sin leer', all.total === 4 && all.unreadCount === 4, JSON.stringify({ total: all.total, unread: all.unreadCount }));
+    // 7 avisos: confirmada, pago rechazado; de la que canceló el dueño, confirmación, cancelación y devolución;
+    // de la que canceló el cliente con tiempo, confirmación y devolución
+    check('hay 7 notificaciones y las 7 sin leer', all.total === 7 && all.unreadCount === 7, JSON.stringify({ total: all.total, unread: all.unreadCount }));
     check('la más nueva va primero', all.data.every((n, i) => i === 0 || all.data[i - 1].createdAt >= n.createdAt));
-    check('el contador de la campanita coincide', (await http('GET', `${BFF}/notifications/unread-count`, { token: buyer })).body.count === 4);
+    check('el contador de la campanita coincide', (await http('GET', `${BFF}/notifications/unread-count`, { token: buyer })).body.count === 7);
 
     const other = await register('CUSTOMER', 'notif-other');
     check('otro cliente ve su bandeja vacía', (await inbox('', other)).total === 0);
@@ -497,9 +511,9 @@ async function main() {
 
     const one = await http('PATCH', `${BFF}/notifications/${all.data[0].id}/read`, { token: buyer });
     check('marcar una como leída', one.status === 200 && one.body.read === true && !!one.body.readAt, JSON.stringify(one.body));
-    check('el filtro "sin leer" trae 3', (await inbox('?unread=true')).total === 3);
+    check('el filtro "sin leer" trae 6', (await inbox('?unread=true')).total === 6);
     const readAll = await http('POST', `${BFF}/notifications/read-all`, { token: buyer });
-    check('marcar todas devuelve cuántas cambió (3)', readAll.status === 200 && readAll.body.updated === 3, JSON.stringify(readAll.body));
+    check('marcar todas devuelve cuántas cambió (6)', readAll.status === 200 && readAll.body.updated === 6, JSON.stringify(readAll.body));
     check('el contador queda en 0', (await http('GET', `${BFF}/notifications/unread-count`, { token: buyer })).body.count === 0);
   }
 
