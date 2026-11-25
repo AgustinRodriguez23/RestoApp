@@ -16,6 +16,12 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: mongoose
         update-types: [version-update:semver-major]
+      # Vite 8 (con Rolldown) es otra migración aparte: @vitejs/plugin-react 6 ya lo exige, así que solo no compila.
+      # Se suben juntos, a mano.
+      - dependency-name: vite
+        update-types: [version-update:semver-major]
+      - dependency-name: "@vitejs/plugin-react"
+        update-types: [version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
